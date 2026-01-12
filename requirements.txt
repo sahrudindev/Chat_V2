@@ -1,0 +1,14 @@
+# MySQL to Qdrant ETL Pipeline - Dependencies
+# For AMD GPU (RX 6600 XT), install PyTorch with ROCm first:
+# pip install torch --index-url https://download.pytorch.org/whl/rocm6.0
+
+# Core dependencies
+pymysql>=1.1.0
+qdrant-client>=1.7.0
+FlagEmbedding>=1.2.0
+numpy>=1.24.0
+tqdm>=4.65.0
+python-dotenv>=1.0.0
+
+# PyTorch (install separately with ROCm for AMD GPU)
+# torch>=2.0.0
