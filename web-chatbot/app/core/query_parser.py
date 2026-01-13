@@ -52,7 +52,7 @@ class QueryParser:
         
         # Listing date filters (year only for simplicity)
         (r'listing\s+(?:sebelum|sebelum\s+tahun|<)\s+(\d{4})', 'listing', 'lt_year'),
-        (r'listing\s+(?:sesudah|setelah|setelah\s+tahun|>)\s+(\d{4})', 'listing', 'gt_year'),
+        (r'listing\s+(?:sesudah\s+tahun|sesudah|setelah\s+tahun|setelah|>)\s+(\d{4})', 'listing', 'gt_year'),
         (r'listed\s+(?:before|<)\s+(\d{4})', 'listing', 'lt_year'),
         (r'listed\s+(?:after|>)\s+(\d{4})', 'listing', 'gt_year'),
     ]
@@ -161,7 +161,19 @@ class QueryParser:
         sort_field = None
         sort_descending = True
         
-        if 'terbesar' in query_lower or 'tertinggi' in query_lower:
+        if any(kw in query_lower for kw in ['earning', 'eps', 'laba', 'laba bersih']):
+            # EPS fundamental - highest earnings per share
+            sort_field = 'earning_per_share'
+            sort_descending = True
+        elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'untung', 'keuntungan', 'profit', 'cuan']):
+            # Market gainers - highest % price increase
+            sort_field = 'percentage_price'
+            sort_descending = True
+        elif any(kw in query_lower for kw in ['loser', 'losers', 'turun', 'rugi', 'loss']):
+            # Market losers - lowest % price (most negative first)
+            sort_field = 'percentage_price'
+            sort_descending = False
+        elif 'terbesar' in query_lower or 'tertinggi' in query_lower:
             sort_field = 'capitalization'
             sort_descending = True
         elif 'terkecil' in query_lower or 'terendah' in query_lower:
@@ -169,34 +181,29 @@ class QueryParser:
             sort_descending = False
         elif 'tertua' in query_lower or 'oldest' in query_lower:
             sort_field = 'listing_year'
-            sort_descending = False  # Oldest = smallest year first
+            sort_descending = False
         elif 'terbaru' in query_lower or 'newest' in query_lower:
             sort_field = 'listing_year'
             sort_descending = True
-        # Profit/Earning - stocks with highest EPS (Fundamental)
-        elif any(kw in query_lower for kw in ['earning', 'eps', 'laba', 'laba bersih']):
-            sort_field = 'earning_per_share'
-            sort_descending = True  # Highest EPS first
-        # Gainers - stocks with highest price increase % (Market Performance)
-        elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'untung', 'keuntungan', 'profit', 'cuan']):
-            sort_field = 'percentage_price'
-            sort_descending = True  # Highest positive % first
-        # Losers - stocks with biggest price drop %
-        elif any(kw in query_lower for kw in ['loser', 'losers', 'turun', 'rugi', 'loss']):
-            sort_field = 'percentage_price'
-            sort_descending = False  # Most negative % first
         elif filters:
             # Use filter field as sort field with appropriate direction
             for f in filters:
                 if 'range' in f:
-                    sort_field = f.get('key')
+                    filter_key = f.get('key')
                     range_cond = f.get('range', {})
+                    
+                    # For listing_year filter, use 'listing' (full date) for better sorting
+                    if filter_key == 'listing_year':
+                        sort_field = 'listing'  # Use full date string for proper chronological order
+                    else:
+                        sort_field = filter_key
+                    
                     # For "sebelum/dibawah" (lt): sort descending (closest to boundary first)
                     # For "sesudah/diatas" (gt): sort ascending (closest to boundary first)
                     if 'lt' in range_cond:
-                        sort_descending = True  # 2018, 2017, 2016... or 999, 950, 800...
+                        sort_descending = True  # 2018-12-31, 2018-12-30, ...
                     elif 'gt' in range_cond:
-                        sort_descending = False  # 2020, 2021, 2022... or 1001, 1050, 1100...
+                        sort_descending = False  # 2011-01-01, 2011-01-02, ...
                     break
         
         # Clean up search text

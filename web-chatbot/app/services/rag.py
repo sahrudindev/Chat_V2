@@ -68,10 +68,12 @@ class RAGService:
         if parsed.filters or sort_field:
             # Use PURE FILTER/SCROLL for filter queries OR ranking queries (with sort_field)
             # This ensures ranking queries get ALL data for accurate sorting
+            logger.info(f"Using scroll_with_filter: filter={qdrant_filter}")
             results = self.qdrant_service.scroll_with_filter(
                 query_filter=qdrant_filter,  # Will be None for pure ranking queries
                 limit=1000  # Get ALL data for accurate ranking (BEI has ~800 stocks)
             )
+            logger.info(f"Scroll returned {len(results)} results")
             
             # Sort results by sort field
             if sort_field and results:
@@ -80,6 +82,7 @@ class RAGService:
                     key=lambda x: x.get("payload", {}).get(sort_field) or 0,
                     reverse=sort_descending
                 )
+                logger.info(f"Sorted by {sort_field}, first 3: {[r.get('payload',{}).get('exchange') for r in results[:3]]}")
         else:
             # Use semantic vector search ONLY for descriptive queries (no filter, no sort)
             dense_vector, sparse_vector = await self.ai_client.embed(search_text)
