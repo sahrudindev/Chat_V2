@@ -114,7 +114,9 @@ class GeminiService:
         logger.info(f"Gemini initialized with model: {self.model_name}")
     
     def chat(self, messages: List[Dict], temperature: float = 0.7, max_tokens: int = 1024) -> str:
-        """Generate chat response using Gemini."""
+        """Generate chat response using Gemini with retry logic."""
+        import time
+        
         # Build the full prompt from messages
         system_prompt = ""
         conversation_parts = []
@@ -136,13 +138,31 @@ class GeminiService:
             full_prompt = f"{system_prompt}\n\n"
         full_prompt += "\n".join(conversation_parts)
         
-        # Generate response using new SDK
-        response = self._client.models.generate_content(
-            model=self.model_name,
-            contents=full_prompt
-        )
+        # Retry logic with exponential backoff
+        max_retries = 3
+        base_delay = 2  # seconds
         
-        return response.text
+        for attempt in range(max_retries):
+            try:
+                response = self._client.models.generate_content(
+                    model=self.model_name,
+                    contents=full_prompt
+                )
+                return response.text
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a 503 overloaded error
+                if "503" in error_str or "overloaded" in error_str.lower() or "UNAVAILABLE" in error_str:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s
+                        logger.warning(f"Gemini overloaded, retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"Gemini still overloaded after {max_retries} retries")
+                        raise
+                else:
+                    # For other errors, don't retry
+                    raise
     
     def health_check(self) -> bool:
         """Check Gemini connection."""

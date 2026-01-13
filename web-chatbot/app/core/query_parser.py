@@ -70,6 +70,36 @@ class QueryParser:
         't': 1_000_000_000_000,
     }
     
+    # Sector keywords mapping to si_code (IDX-IC codes)
+    SECTOR_KEYWORDS = {
+        'bank': 'G111',
+        'perbankan': 'G111',
+        'banking': 'G111',
+        'asuransi': 'G121',
+        'insurance': 'G121',
+        'properti': 'H111',
+        'property': 'H111',
+        'real estat': 'H111',
+        'teknologi': 'I',
+        'technology': 'I',
+        'telekomunikasi': 'J121',
+        'telco': 'J121',
+        'telecom': 'J121',
+        'farmasi': 'F121',
+        'pharma': 'F121',
+        'tambang': 'B111',
+        'mining': 'B111',
+        'batubara': 'A112',
+        'coal': 'A112',
+        'minyak': 'A111',
+        'oil': 'A111',
+        'gas': 'A111',
+        'konstruksi': 'C121',
+        'construction': 'C121',
+        'consumer': 'D',
+        'konsumen': 'D',
+    }
+    
     def parse(self, query: str) -> ParsedQuery:
         """
         Parse query to extract filters and search text.
@@ -96,6 +126,31 @@ class QueryParser:
                     # Skip invalid matches
                     pass
         
+        query_lower = query.lower()
+        
+        # Check if this is a descriptive query (should NOT apply sector filter)
+        descriptive_keywords = ['ceritakan', 'jelaskan', 'apa itu', 'tentang', 'siapa', 'bagaimana', 'describe', 'about', 'what is']
+        is_descriptive = any(kw in query_lower for kw in descriptive_keywords)
+        
+        # Check if this is a ranking/list query (SHOULD apply sector filter)
+        ranking_keywords = ['terbesar', 'terkecil', 'tertinggi', 'terendah', 'list', 'daftar', 'tertua', 'terbaru']
+        is_ranking = any(kw in query_lower for kw in ranking_keywords)
+        
+        # Detect sector keywords and add sector filter ONLY for ranking queries
+        detected_sector = None
+        if is_ranking and not is_descriptive:
+            for keyword, sector_code in self.SECTOR_KEYWORDS.items():
+                if keyword in query_lower:
+                    detected_sector = sector_code
+                    break
+            
+            if detected_sector:
+                # Add sector filter using si_code field
+                filters.append({
+                    "key": "si_code",
+                    "match": detected_sector
+                })
+        
         # Extract requested count (e.g., "5 saham", "10 bank", "3 perusahaan")
         requested_count = 10  # default
         count_match = re.search(r'\b(\d+)\s*(?:saham|bank|perusahaan|emiten|stock)', query, re.IGNORECASE)
@@ -105,7 +160,6 @@ class QueryParser:
         # Determine sort field based on query context
         sort_field = None
         sort_descending = True
-        query_lower = query.lower()
         
         if 'terbesar' in query_lower or 'tertinggi' in query_lower:
             sort_field = 'capitalization'
@@ -119,9 +173,24 @@ class QueryParser:
         elif 'terbaru' in query_lower or 'newest' in query_lower:
             sort_field = 'listing_year'
             sort_descending = True
+        # Profit/Earning - stocks with highest EPS (keuntungan per saham)
+        elif any(kw in query_lower for kw in ['untung', 'keuntungan', 'profit', 'earning', 'eps', 'laba']):
+            sort_field = 'earning_per_share'
+            sort_descending = True  # Highest EPS first
+        # Gainers - stocks with highest price increase %
+        elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik']):
+            sort_field = 'percentage_price'
+            sort_descending = True  # Highest positive % first
+        # Losers - stocks with biggest price drop %
+        elif any(kw in query_lower for kw in ['loser', 'losers', 'turun', 'rugi', 'loss']):
+            sort_field = 'percentage_price'
+            sort_descending = False  # Most negative % first
         elif filters:
-            # Use filter field as sort field
-            sort_field = filters[0].get('key')
+            # Use filter field as sort field (only for range filters)
+            for f in filters:
+                if 'range' in f:
+                    sort_field = f.get('key')
+                    break
         
         # Clean up search text
         search_text = re.sub(r'\s+', ' ', search_text).strip()
@@ -192,17 +261,24 @@ class QueryParser:
         conditions = []
         for f in filters:
             key = f["key"]
-            range_cond = f["range"]
             
-            conditions.append({
-                "key": key,
-                "range": range_cond
-            })
+            # Handle range filter
+            if "range" in f:
+                conditions.append({
+                    "key": key,
+                    "range": f["range"]
+                })
+            # Handle match filter (for sector)
+            elif "match" in f:
+                conditions.append({
+                    "key": key,
+                    "match": f["match"]
+                })
         
-        if len(conditions) == 1:
-            return {"must": [{"key": conditions[0]["key"], "range": conditions[0]["range"]}]}
-        else:
-            return {"must": [{"key": c["key"], "range": c["range"]} for c in conditions]}
+        if not conditions:
+            return None
+        
+        return {"must": conditions}
 
 
 # Singleton instance

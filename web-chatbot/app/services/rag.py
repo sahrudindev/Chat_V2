@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Load system prompt
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-SYSTEM_PROMPT = (PROMPTS_DIR / "system.txt").read_text()
+SYSTEM_PROMPT = (PROMPTS_DIR / "system2.txt").read_text()
 
 
 class RAGService:
@@ -65,11 +65,12 @@ class RAGService:
         
         logger.info(f"Query: count={requested_count}, sort={sort_field}, desc={sort_descending}, filters={parsed.filters}")
         
-        if parsed.filters:
-            # Use PURE FILTER search (scroll) for filter queries
+        if parsed.filters or sort_field:
+            # Use PURE FILTER/SCROLL for filter queries OR ranking queries (with sort_field)
+            # This ensures ranking queries get ALL data for accurate sorting
             results = self.qdrant_service.scroll_with_filter(
-                query_filter=qdrant_filter,
-                limit=50  # Always get up to 50 for filter queries
+                query_filter=qdrant_filter,  # Will be None for pure ranking queries
+                limit=1000  # Get ALL data for accurate ranking (BEI has ~800 stocks)
             )
             
             # Sort results by sort field
@@ -80,23 +81,15 @@ class RAGService:
                     reverse=sort_descending
                 )
         else:
-            # Use semantic vector search for non-filter queries (including sort-only)
+            # Use semantic vector search ONLY for descriptive queries (no filter, no sort)
             dense_vector, sparse_vector = await self.ai_client.embed(search_text)
             results = self.qdrant_service.search(
                 dense_vector=dense_vector,
                 sparse_vector=sparse_vector,
-                top_k=50,  # Get more results for sorting
+                top_k=50,
                 score_threshold=self.score_threshold,
                 query_filter=None
             )
-            
-            # Sort results by sort field if specified
-            if sort_field and results:
-                results = sorted(
-                    results,
-                    key=lambda x: x.get("payload", {}).get(sort_field) or 0,
-                    reverse=sort_descending
-                )
         
         # Format results - 5 detailed + rest as codes only
         sources = []

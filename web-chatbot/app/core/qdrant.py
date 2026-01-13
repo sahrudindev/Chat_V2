@@ -129,45 +129,60 @@ class QdrantService:
     
     def scroll_with_filter(
         self,
-        query_filter: Dict[str, Any],
+        query_filter: Optional[Dict[str, Any]] = None,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
         """
-        Scroll through collection with filter only (no vector search).
+        Scroll through collection with optional filter.
         
         Use for filter-based queries like "price < 1000" where we want
         ALL matching results, not semantically similar ones.
+        Also used for ranking queries without filter (returns all data for sorting).
         """
         try:
             logger.info(f"Scrolling with filter: {query_filter}, limit: {limit}")
             
-            # Build Qdrant filter
-            filter_conditions = []
+            # Build Qdrant filter if provided
+            qdrant_filter = None
             if query_filter and "must" in query_filter:
+                filter_conditions = []
                 for condition in query_filter["must"]:
                     key = condition.get("key")
-                    range_cond = condition.get("range", {})
                     
-                    range_filter = models.Range(
-                        lt=range_cond.get("lt"),
-                        gt=range_cond.get("gt"),
-                        lte=range_cond.get("lte"),
-                        gte=range_cond.get("gte")
-                    )
-                    
-                    filter_conditions.append(
-                        models.FieldCondition(
-                            key=key,
-                            range=range_filter
+                    # Handle range filter (for price, volume, etc.)
+                    if "range" in condition:
+                        range_cond = condition.get("range", {})
+                        range_filter = models.Range(
+                            lt=range_cond.get("lt"),
+                            gt=range_cond.get("gt"),
+                            lte=range_cond.get("lte"),
+                            gte=range_cond.get("gte")
                         )
-                    )
+                        filter_conditions.append(
+                            models.FieldCondition(
+                                key=key,
+                                range=range_filter
+                            )
+                        )
+                    
+                    # Handle match filter (for sector codes like G111)
+                    elif "match" in condition:
+                        match_value = condition.get("match")
+                        # Use MatchText for prefix matching (e.g., "G" matches "G111", "G121")
+                        filter_conditions.append(
+                            models.FieldCondition(
+                                key=key,
+                                match=models.MatchText(text=match_value)
+                            )
+                        )
+                
+                if filter_conditions:
+                    qdrant_filter = models.Filter(must=filter_conditions)
             
-            qdrant_filter = models.Filter(must=filter_conditions) if filter_conditions else None
-            
-            # Use scroll to get all matching results
+            # Use scroll to get results (with or without filter)
             results, _ = self.client.scroll(
                 collection_name=self.collection_name,
-                scroll_filter=qdrant_filter,
+                scroll_filter=qdrant_filter,  # None = get all data
                 limit=limit,
                 with_payload=True,
             )
