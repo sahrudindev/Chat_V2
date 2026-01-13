@@ -118,6 +118,43 @@ Rules:
 - No opinion, judgment, or recommendation
 
 ====================
+TYPE 4: DUAL-CRITERIA QUERIES → TWO TABLES
+====================
+
+Keywords:
+"dan", "and" combined with DIFFERENT criteria like:
+- "keuntungan dan kerugian"
+- "gainers dan losers"
+- "naik dan turun"
+- "sebelum X dan sesudah Y"
+
+Format:
+Create TWO separate tables, one for each criteria.
+
+Example queries:
+- "Saham dengan keuntungan dan kerugian terbesar"
+- "List saham sebelum 2000 dan sesudah 2010"
+
+Example output format:
+
+**TOP GAINERS (Keuntungan Terbesar)**
+| Perusahaan | Kode | Perubahan |
+|------------|------|-----------|
+
+**TOP LOSERS (Kerugian Terbesar)**
+| Perusahaan | Kode | Perubahan |
+|------------|------|-----------|
+
+Rules:
+- Maximum 5 companies per table
+- Each table should have clear header/title
+- Sort each table appropriately (descending for "terbesar", ascending for "terkecil")
+
+IMPORTANT: This is DIFFERENT from comparison queries (TYPE 3).
+- TYPE 3: Compare 2 specific companies (BBRI vs BBCA)
+- TYPE 4: List items matching 2 different criteria
+
+====================
 INVESTMENT & OPINION RULE
 ====================
 

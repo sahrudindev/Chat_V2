@@ -86,7 +86,7 @@ class RAGService:
             results = self.qdrant_service.search(
                 dense_vector=dense_vector,
                 sparse_vector=sparse_vector,
-                top_k=50,
+                top_k=1000,  # Full dataset coverage (~800 stocks)
                 score_threshold=self.score_threshold,
                 query_filter=None
             )
