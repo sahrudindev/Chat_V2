@@ -94,6 +94,46 @@ class RAGService:
                 query_filter=None
             )
         
+        # SHAREHOLDER CROSS-REFERENCE: Detect if query is asking about a person at a specific company
+        # Pattern: "Apakah [NAME] pemegang saham [COMPANY]?"
+        query_lower = query.lower()
+        shareholder_keywords = ['pemegang saham', 'shareholder', 'kepemilikan', 'dimiliki']
+        is_shareholder_query = any(kw in query_lower for kw in shareholder_keywords)
+        
+        if is_shareholder_query and results:
+            # Check if the top result actually contains info about the queried entity
+            # If not, search semantically for the person name
+            top_result = results[0] if results else {}
+            top_text = top_result.get("payload", {}).get("text", "").lower()
+            
+            # Try to extract person/entity names from query (words before shareholder keywords)
+            import re
+            # Common patterns: "Apakah X pemegang saham Y", "X adalah pemegang saham Y"
+            name_match = re.search(r'(?:apakah|adalah)\s+([^?]+?)\s+(?:pemegang|shareholder)', query_lower)
+            if name_match:
+                entity_name = name_match.group(1).strip()
+                # Check if entity exists in top results
+                entity_found = any(entity_name in r.get("payload", {}).get("text", "").lower() for r in results[:5])
+                
+                if not entity_found and len(entity_name) > 2:
+                    # Do secondary search for the person/entity name
+                    logger.info(f"Shareholder cross-ref: searching for entity '{entity_name}'")
+                    entity_dense, entity_sparse = await self.ai_client.embed(entity_name)
+                    entity_results = self.qdrant_service.search(
+                        dense_vector=entity_dense,
+                        sparse_vector=entity_sparse,
+                        top_k=10,
+                        score_threshold=self.score_threshold,
+                        query_filter=None
+                    )
+                    # Merge entity results with original (avoiding duplicates)
+                    seen_ids = {r.get("id") for r in results[:10]}
+                    for er in entity_results:
+                        if er.get("id") not in seen_ids:
+                            results.insert(5, er)  # Insert after top 5
+                            seen_ids.add(er.get("id"))
+                    logger.info(f"Added {len(entity_results)} cross-reference results")
+        
         # Format results - 5 detailed + rest as codes only
         sources = []
         detailed_parts = []
@@ -134,6 +174,19 @@ class RAGService:
                 sector_code = payload.get('si_code') or ''
                 sector_display = get_sector_name(sector_code) if sector_code else 'N/A'
                 
+                # Format shareholders for display
+                shareholders_list = payload.get('shareholders', [])
+                shareholders_text = ""
+                if shareholders_list:
+                    shareholders_text = "\nPemegang Saham:\n"
+                    for j, sh in enumerate(shareholders_list[:5]):  # Top 5 shareholders
+                        sh_name = sh.get('name', 'Unknown')
+                        sh_pct = sh.get('percentage', 0)
+                        sh_shares = sh.get('shares', 0)
+                        shareholders_text += f"  {j+1}. {sh_name}: {sh_pct:.2f}% ({sh_shares:,} saham)\n"
+                    if len(shareholders_list) > 5:
+                        shareholders_text += f"  ... dan {len(shareholders_list) - 5} pemegang saham lainnya\n"
+                
                 detailed_parts.append(f"""
 [Perusahaan {i+1}]
 Nama: {name} ({exchange})
@@ -148,8 +201,7 @@ Perubahan Harga: {fmt_num(payload.get('price_change'))} ({fmt_pct(payload.get('p
 Volume: {fmt_num(payload.get('tradable_volume'))}
 Kapitalisasi Pasar: {fmt_num(payload.get('capitalization'), "Rp ")}
 P/E Ratio: {payload.get('price_earning_ratio') or 'N/A'}
-EPS: {payload.get('earning_per_share') or 'N/A'}
-""")
+EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}""")
             else:
                 # Rest: Just code
                 additional_codes.append(exchange)

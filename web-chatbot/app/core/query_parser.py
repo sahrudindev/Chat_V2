@@ -129,7 +129,13 @@ class QueryParser:
         query_lower = query.lower()
         
         # Check if this is a descriptive query (should NOT apply sector filter)
-        descriptive_keywords = ['ceritakan', 'jelaskan', 'apa itu', 'tentang', 'siapa', 'bagaimana', 'describe', 'about', 'what is']
+        descriptive_keywords = [
+            'ceritakan', 'jelaskan', 'apa itu', 'tentang', 'siapa', 'bagaimana', 
+            'describe', 'about', 'what is',
+            # Shareholder-related keywords
+            'pemegang saham', 'shareholder', 'kepemilikan', 'ownership', 'dimiliki',
+            'pemilik', 'investor', 'stakeholder', 'saham terbesar', 'mayoritas'
+        ]
         is_descriptive = any(kw in query_lower for kw in descriptive_keywords)
         
         # Check if this is a ranking/list query (SHOULD apply sector filter)

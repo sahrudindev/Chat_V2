@@ -9,6 +9,7 @@ using BGE-M3 embeddings for Hybrid Search (Dense + Sparse vectors).
 Features:
 - Server-Side Cursor (SSCursor) for memory-efficient streaming of large datasets
 - BGE-M3 hybrid embeddings (Dense for semantic + Sparse for lexical matching)
+- Modular data sources (Company + Shareholder in single script)
 - Batch processing for optimal throughput
 - AMD ROCm / NVIDIA CUDA / CPU auto-detection
 
@@ -22,6 +23,7 @@ import logging
 from dataclasses import dataclass
 from typing import Generator, Dict, Any, List, Tuple, Optional
 from datetime import datetime
+from collections import defaultdict
 import re
 import html
 
@@ -82,6 +84,7 @@ class ETLConfig:
     batch_size: int = int(os.getenv('BATCH_SIZE', 50))
     max_rows: Optional[int] = None  # None = process all rows
     dry_run: bool = False
+    include_shareholders: bool = True  # NEW: Include shareholder data
 
 
 # =============================================================================
@@ -310,11 +313,148 @@ def count_rows(config: MySQLConfig) -> int:
     
     try:
         with connection.cursor() as cursor:
-            cursor.execute(f"SELECT COUNT(*) FROM {config.table}")
+            cursor.execute(f"SELECT COUNT(*) FROM {config.table} WHERE status = '0'")
             count = cursor.fetchone()[0]
             return count
     finally:
         connection.close()
+
+
+# =============================================================================
+# SHAREHOLDER DATA FETCHING (NEW)
+# =============================================================================
+
+def fetch_all_shareholders(config: MySQLConfig) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Fetch all shareholder data from MySQL and group by company.
+    
+    Uses the query to get latest shareholding data per company.
+    Excludes: id, datecreate, datemodified, input_prompt columns.
+    
+    Returns:
+        Dict mapping company code (exchange) to list of shareholders
+    """
+    logger.info("Fetching shareholder data from MySQL...")
+    
+    connection = pymysql.connect(
+        host=config.host,
+        port=config.port,
+        user=config.user,
+        password=config.password,
+        database=config.database,
+        charset=config.charset,
+    )
+    
+    shareholders_by_company: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    
+    try:
+        with connection.cursor() as cursor:
+            # Query to get latest shareholding data per company
+            # Excludes: id, datecreate, datemodified, input_prompt
+            # Only selects columns that definitely exist
+            query = """
+                SELECT 
+                    s.company,
+                    s.holding_date,
+                    s.name,
+                    s.shares,
+                    s.percentage,
+                    s.active
+                FROM shareholder s
+                JOIN (
+                    SELECT
+                        company,
+                        MAX(holding_date) AS max_holding_date
+                    FROM shareholder
+                    WHERE active = 'Y'
+                    GROUP BY company
+                ) t
+                  ON s.company = t.company
+                 AND s.holding_date = t.max_holding_date
+                WHERE s.active = 'Y'
+                ORDER BY s.company ASC, s.shares DESC
+            """
+            
+            cursor.execute(query)
+            columns = [col[0] for col in cursor.description]
+            
+            for row in cursor:
+                row_dict = dict(zip(columns, row))
+                company_code = row_dict.get('company', '')
+                if company_code:
+                    # Handle VARCHAR to numeric conversion safely
+                    shares_str = row_dict.get('shares', '') or '0'
+                    percentage_str = row_dict.get('percentage', '') or '0'
+                    
+                    # Clean and convert shares (remove commas, spaces)
+                    try:
+                        shares_clean = shares_str.replace(',', '').replace('.', '').strip()
+                        shares_val = int(shares_clean) if shares_clean else 0
+                    except (ValueError, AttributeError):
+                        shares_val = 0
+                    
+                    # Clean and convert percentage
+                    try:
+                        percentage_clean = percentage_str.replace(',', '.').strip()
+                        percentage_val = float(percentage_clean) if percentage_clean else 0.0
+                    except (ValueError, AttributeError):
+                        percentage_val = 0.0
+                    
+                    shareholders_by_company[company_code].append({
+                        'name': row_dict.get('name', ''),
+                        'shares': shares_val,
+                        'percentage': percentage_val,
+                        'holding_date': str(row_dict.get('holding_date', '')) if row_dict.get('holding_date') else None,
+                    })
+            
+            total_shareholders = sum(len(v) for v in shareholders_by_company.values())
+            logger.info(f"Fetched {total_shareholders} shareholders for {len(shareholders_by_company)} companies")
+            
+    finally:
+        connection.close()
+    
+    return dict(shareholders_by_company)
+
+
+def format_shareholders_for_text(shareholders: List[Dict[str, Any]], max_display: int = 10) -> str:
+    """
+    Format shareholder data into natural language for embedding.
+    
+    Args:
+        shareholders: List of shareholder dicts
+        max_display: Max shareholders to include in text (for embedding brevity)
+        
+    Returns:
+        Natural language description of shareholders
+    """
+    if not shareholders:
+        return ""
+    
+    parts = []
+    parts.append("Pemegang Saham Utama:")
+    
+    # Include all shareholder names for better semantic search (reverse lookup)
+    for i, sh in enumerate(shareholders[:max_display]):
+        name = sh.get('name', 'Unknown')
+        percentage = sh.get('percentage', 0)
+        shares = sh.get('shares', 0)
+        
+        # Format shares with thousands separator
+        shares_formatted = f"{shares:,}" if shares else "N/A"
+        
+        line = f"- {name}: {percentage:.2f}% ({shares_formatted} lembar saham)"
+        parts.append(line)
+    
+    if len(shareholders) > max_display:
+        remaining = len(shareholders) - max_display
+        # Include remaining shareholder NAMES for search (without full details)
+        remaining_names = [sh.get('name', '') for sh in shareholders[max_display:] if sh.get('name')]
+        if remaining_names:
+            parts.append(f"- Pemegang saham lainnya: {', '.join(remaining_names[:10])}")
+            if len(remaining_names) > 10:
+                parts.append(f"  ...dan {len(remaining_names) - 10} pemegang saham lainnya")
+    
+    return "\n".join(parts)
 
 
 # =============================================================================
@@ -357,18 +497,19 @@ def _extract_year(date_val) -> Optional[int]:
         return None
 
 
-def serialize_row(row: Dict[str, Any]) -> str:
+def serialize_row(row: Dict[str, Any], shareholders: Optional[List[Dict[str, Any]]] = None) -> str:
     """
     Convert company data into natural language for embedding.
     
     Optimized for RAG queries about Indonesian listed companies.
     Includes listing date for date-based semantic search.
+    Now includes shareholder data for ownership queries.
     
     Example:
         Input:  {'name': 'PT. Eagle High Plantations Tbk', 'exchange': 'BWPT', ...}
         Output: "PT. Eagle High Plantations Tbk (BWPT)
                  PT Eagle High Plantations Tbk was initiated in 2000...
-                 The company is engaged in the palm plantation industry..."
+                 Pemegang Saham Utama: ..."
     """
     name = row.get('name', 'Unknown Company')
     exchange = row.get('exchange', '')
@@ -413,6 +554,12 @@ def serialize_row(row: Dict[str, Any]) -> str:
     
     if context_parts:
         parts.append(" | ".join(context_parts))
+    
+    # NEW: Add shareholder information for semantic search
+    if shareholders:
+        shareholder_text = format_shareholders_for_text(shareholders)
+        if shareholder_text:
+            parts.append(shareholder_text)
     
     return "\n\n".join(parts)
 
@@ -479,6 +626,7 @@ def process_and_upsert_batch(
     client: QdrantClient,
     config: QdrantConfig,
     start_id: int,
+    shareholders_map: Dict[str, List[Dict[str, Any]]],
     dry_run: bool = False
 ) -> int:
     """
@@ -490,6 +638,7 @@ def process_and_upsert_batch(
         client: Qdrant client
         config: Qdrant configuration
         start_id: Starting point ID for this batch
+        shareholders_map: Dict mapping company code to shareholder list
         dry_run: If True, skip actual upsert
         
     Returns:
@@ -498,8 +647,13 @@ def process_and_upsert_batch(
     if not batch:
         return 0
     
-    # Step 1: Serialize rows to natural language
-    texts = [serialize_row(row) for row in batch]
+    # Step 1: Serialize rows to natural language (with shareholders)
+    texts = []
+    for row in batch:
+        exchange = row.get('exchange', '')
+        company_shareholders = shareholders_map.get(exchange, [])
+        text = serialize_row(row, company_shareholders)
+        texts.append(text)
     
     # Step 2: Generate embeddings (both dense and sparse)
     dense_vectors, sparse_vectors = embedder.encode_batch(texts)
@@ -510,11 +664,15 @@ def process_and_upsert_batch(
         zip(batch, texts, dense_vectors, sparse_vectors)
     ):
         point_id = start_id + i
+        exchange = row.get('exchange', '')
         
         # Convert sparse vector to Qdrant format
         # sparse_vec is {token_id: weight}
         sparse_indices = list(sparse_vec.keys())
         sparse_values = list(sparse_vec.values())
+        
+        # Get shareholders for this company
+        company_shareholders = shareholders_map.get(exchange, [])
         
         point = PointStruct(
             id=point_id,
@@ -527,7 +685,7 @@ def process_and_upsert_batch(
             },
             payload={
                 # Company identity for filtering
-                "exchange": row.get('exchange'),
+                "exchange": exchange,
                 "name": row.get('name'),
                 "si_code": row.get('si_code'),
                 "group": row.get('group'),
@@ -559,6 +717,11 @@ def process_and_upsert_batch(
                 # Financial ratios (numeric for filtering)
                 "price_earning_ratio": float(row.get('price_earning_ratio')) if row.get('price_earning_ratio') else None,
                 "earning_per_share": float(row.get('earning_per_share')) if row.get('earning_per_share') else None,
+                # NEW: Shareholder data (structured for filtering)
+                "shareholders": company_shareholders,  # All shareholders as list
+                "top_shareholder": company_shareholders[0].get('name') if company_shareholders else None,
+                "top_shareholder_percentage": company_shareholders[0].get('percentage') if company_shareholders else None,
+                "total_shareholders": len(company_shareholders),
                 # Source
                 "source": "idnfinancials.com",
                 # Serialized text for reference
@@ -623,6 +786,13 @@ def run_etl(
     # Setup collection
     setup_qdrant_collection(client, qdrant_config)
     
+    # NEW: Fetch shareholder data if enabled
+    shareholders_map: Dict[str, List[Dict[str, Any]]] = {}
+    if etl_config.include_shareholders:
+        logger.info("Fetching shareholder data...")
+        shareholders_map = fetch_all_shareholders(mysql_config)
+        logger.info(f"Loaded shareholders for {len(shareholders_map)} companies")
+    
     # Get row count for progress bar
     try:
         total_rows = count_rows(mysql_config)
@@ -651,6 +821,7 @@ def run_etl(
                         client=client,
                         config=qdrant_config,
                         start_id=total_processed + 1,
+                        shareholders_map=shareholders_map,
                         dry_run=etl_config.dry_run,
                     )
                     total_processed += count
@@ -672,6 +843,7 @@ def run_etl(
                     client=client,
                     config=qdrant_config,
                     start_id=total_processed + 1,
+                    shareholders_map=shareholders_map,
                     dry_run=etl_config.dry_run,
                 )
                 total_processed += count
@@ -692,6 +864,7 @@ def run_etl(
         "duration_seconds": duration,
         "rows_per_second": total_processed / duration if duration > 0 else 0,
         "collection_name": qdrant_config.collection_name,
+        "shareholders_loaded": len(shareholders_map),
         "dry_run": etl_config.dry_run,
     }
     
@@ -700,6 +873,7 @@ def run_etl(
     logger.info("=" * 60)
     logger.info(f"Total rows processed: {stats['total_rows_processed']:,}")
     logger.info(f"Total batches: {stats['total_batches']:,}")
+    logger.info(f"Shareholders loaded for: {stats['shareholders_loaded']} companies")
     logger.info(f"Duration: {stats['duration_seconds']:.2f} seconds")
     logger.info(f"Throughput: {stats['rows_per_second']:.2f} rows/second")
     logger.info(f"Collection: {stats['collection_name']}")
@@ -736,6 +910,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=50, help='Rows per batch')
     parser.add_argument('--max-rows', type=int, default=None, help='Limit rows to process')
     parser.add_argument('--dry-run', action='store_true', help='Skip actual upserts')
+    parser.add_argument('--no-shareholders', action='store_true', help='Skip shareholder data')
     
     args = parser.parse_args()
     
@@ -759,6 +934,7 @@ def main():
         batch_size=args.batch_size,
         max_rows=args.max_rows,
         dry_run=args.dry_run,
+        include_shareholders=not args.no_shareholders,
     )
     
     # Run ETL

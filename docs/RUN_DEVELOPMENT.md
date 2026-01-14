@@ -57,9 +57,17 @@ docker compose up -d qdrant
 ### 2.2 Jalankan ETL (Populate Vector Database)
 ```bash
 cd /home/fiqri/Desktop/IDN/AI_v2/etl
+
+# Run ETL lengkap dengan shareholder data
 python mysql_to_qdrant_etl.py --qdrant-host localhost
+
+# Atau skip shareholder jika tidak diperlukan
+python mysql_to_qdrant_etl.py --qdrant-host localhost --no-shareholders
+
+# Test dulu dengan dry-run (opsional)
+python mysql_to_qdrant_etl.py --max-rows 10 --dry-run
 ```
-⏱️ Waktu: ~10-15 menit untuk 866 perusahaan
+⏱️ Waktu: ~10-15 menit untuk 866 perusahaan + shareholder data
 
 ---
 

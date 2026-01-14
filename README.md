@@ -100,11 +100,12 @@ sudo usermod -aG video,render $USER
 ```bash
 python mysql_to_qdrant_etl.py \
   --mysql-host localhost \
-  --mysql-database local_news \
-  --mysql-table stock_session1_data \
+  --mysql-database idnrag \
+  --mysql-table company \
   --batch-size 50 \
   --max-rows 1000 \    # Optional: limit rows
-  --dry-run            # Optional: skip actual inserts
+  --dry-run \          # Optional: skip actual inserts
+  --no-shareholders    # Optional: skip shareholder data
 ```
 
 ---
