@@ -171,12 +171,14 @@ class QueryParser:
             # EPS fundamental - highest earnings per share
             sort_field = 'earning_per_share'
             sort_descending = True
-        elif any(kw in query_lower for kw in ['dividend yield', 'yield dividen', 'yield tertinggi']):
-            # Dividend yield - highest yield first
+        elif any(kw in query_lower for kw in ['dividend yield', 'yield dividen']) and \
+             any(kw in query_lower for kw in ['tertinggi', 'terbesar', 'top', 'highest', 'best', 'paling tinggi']):
+            # Dividend yield - highest yield first (ONLY for ranking queries)
             sort_field = 'latest_dividend_yield'
             sort_descending = True
-        elif any(kw in query_lower for kw in ['dividen terbesar', 'dividen tertinggi', 'dps terbesar', 'dividend per share terbesar']):
-            # Highest dividend per share
+        elif any(kw in query_lower for kw in ['dividen', 'dividend', 'dps']) and \
+             any(kw in query_lower for kw in ['terbesar', 'tertinggi', 'top', 'highest', 'paling besar']):
+            # Highest dividend per share (ONLY for ranking queries)
             sort_field = 'latest_dividend_per_share'
             sort_descending = True
         elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'untung', 'keuntungan', 'profit', 'cuan']):
