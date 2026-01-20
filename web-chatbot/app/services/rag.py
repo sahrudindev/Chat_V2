@@ -169,8 +169,8 @@ class RAGService:
             )
             sources.append(source)
             
-            if i < 5:
-                # First 5: Full detailed context
+            if i < 10:
+                # First 10: Full detailed context (increased from 5 for ranking queries)
                 sector_code = payload.get('si_code') or ''
                 sector_display = get_sector_name(sector_code) if sector_code else 'N/A'
                 
@@ -187,6 +187,62 @@ class RAGService:
                     if len(shareholders_list) > 5:
                         shareholders_text += f"  ... dan {len(shareholders_list) - 5} pemegang saham lainnya\n"
                 
+                # Format dividends for display
+                # Format dividends for display
+                dividends_list = payload.get('dividends', [])
+                dividends_text = ""
+                if dividends_list:
+                    dividends_text = "\nRiwayat Dividen:\n"
+                    
+                    # Group by year to handle Interim + Final
+                    divs_by_year = {}
+                    for div in dividends_list:
+                        year = div.get('year')
+                        if not year: continue
+                        if year not in divs_by_year:
+                             divs_by_year[year] = []
+                        divs_by_year[year].append(div)
+                    
+                    # Sort years descending
+                    sorted_years = sorted(divs_by_year.keys(), reverse=True)
+                    
+                    display_count = 0
+                    for year in sorted_years:
+                        if display_count >= 3: break
+                        
+                        year_divs = divs_by_year[year]
+                        
+                        # Calculate total for the year
+                        total_dps = sum(d.get('dividend_per_share', 0) for d in year_divs)
+                        total_yield = sum(d.get('dividend_yield', 0) for d in year_divs)
+                        
+                        # Format types (e.g., "Interim & Final")
+                        types = [d.get('type', '') for d in year_divs if d.get('type')]
+                        type_str = " & ".join(types) if types else ""
+                        
+                        # Skip future years with 0 yield if we have valid history, UNLESS it's the only data
+                        if total_yield == 0 and display_count > 0:
+                            continue
+
+                        line = f"  - Tahun {year}: Total DPS Rp {total_dps:,.0f} (Total Yield: {total_yield:.2f}%)"
+                        if type_str:
+                            line += f" [{type_str}]"
+                        
+                        # Add individual details if multiple dividends in year
+                        if len(year_divs) > 1:
+                            details = []
+                            for d in year_divs:
+                                d_type = d.get('type', 'Dividend')
+                                d_yield = d.get('dividend_yield', 0)
+                                details.append(f"{d_type}: {d_yield:.2f}%")
+                            line += f" ({', '.join(details)})"
+                            
+                        dividends_text += line + "\n"
+                        display_count += 1
+                        
+                    if len(sorted_years) > 3:
+                        dividends_text += f"  ... dan riwayat tahun-tahun sebelumnya\n"
+                
                 detailed_parts.append(f"""
 [Perusahaan {i+1}]
 Nama: {name} ({exchange})
@@ -201,7 +257,7 @@ Perubahan Harga: {fmt_num(payload.get('price_change'))} ({fmt_pct(payload.get('p
 Volume: {fmt_num(payload.get('tradable_volume'))}
 Kapitalisasi Pasar: {fmt_num(payload.get('capitalization'), "Rp ")}
 P/E Ratio: {payload.get('price_earning_ratio') or 'N/A'}
-EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}""")
+EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}{dividends_text}""")
             else:
                 # Rest: Just code
                 additional_codes.append(exchange)
@@ -214,10 +270,32 @@ EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}""")
             codes_str = ", ".join(additional_codes[:10])  # Max 10 codes
             remaining = len(additional_codes) - 10 if len(additional_codes) > 10 else 0
             if remaining > 0:
-                context += f"\n\n[Data Tambahan]\nSelain 5 perusahaan di atas, ada juga: {codes_str}, dan {remaining} perusahaan lainnya."
+                context += f"\n\n[Data Tambahan]\nSelain 10 perusahaan di atas, ada juga: {codes_str}, dan {remaining} perusahaan lainnya."
             else:
-                context += f"\n\n[Data Tambahan]\nSelain 5 perusahaan di atas, ada juga: {codes_str}."
+                context += f"\n\n[Data Tambahan]\nSelain 10 perusahaan di atas, ada juga: {codes_str}."
             context += "\nSarankan user untuk cek idnfinancials.com untuk informasi lengkap."
+        
+        # Add DIVIDEND RANKING SUMMARY for all results (for dividend ranking queries)
+        # This provides compact dividend data for ALL companies to enable proper ranking
+        dividend_summary_parts = []
+        for result in results:
+            payload = result.get("payload", {})
+            div_yield = payload.get("latest_dividend_yield", 0)
+            div_dps = payload.get("latest_dividend_per_share", 0)
+            div_year = payload.get("latest_dividend_year")
+            if div_yield and div_yield > 0:
+                name = payload.get("name", "Unknown")
+                exchange = payload.get("exchange", "N/A")
+                dividend_summary_parts.append(
+                    f"- {name} ({exchange}): Tahun {div_year}, DPS Rp {div_dps:,.0f}, Yield {div_yield:.2f}%"
+                )
+        
+        if dividend_summary_parts:
+            context += "\n\n[RINGKASAN DIVIDEN SEMUA PERUSAHAAN]\n"
+            context += "Berikut data dividend yield dari semua perusahaan yang tersedia (untuk ranking):\n"
+            context += "\n".join(dividend_summary_parts[:50])  # Max 50 for token limit
+            if len(dividend_summary_parts) > 50:
+                context += f"\n...dan {len(dividend_summary_parts) - 50} perusahaan lainnya"
         
         return sources, context
     

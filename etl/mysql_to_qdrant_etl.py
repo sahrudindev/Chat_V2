@@ -458,6 +458,155 @@ def format_shareholders_for_text(shareholders: List[Dict[str, Any]], max_display
 
 
 # =============================================================================
+# DIVIDEND DATA FETCHING
+# =============================================================================
+
+def fetch_all_dividends(config: MySQLConfig) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Fetch dividend data from MySQL and group by company.
+    
+    Gets 5 latest dividends per company with all relevant fields.
+    Calculates dividend_yield = (dps / close_price) * 100
+    
+    Returns:
+        Dict mapping company code to list of dividend records
+    """
+    logger.info("Fetching dividend data from MySQL...")
+    
+    connection = pymysql.connect(
+        host=config.host,
+        port=config.port,
+        user=config.user,
+        password=config.password,
+        database=config.database,
+        charset=config.charset,
+    )
+    
+    dividends_by_company: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    
+    try:
+        with connection.cursor() as cursor:
+            # Query to get dividends ordered by year (latest first)
+            # Using ROW_NUMBER to get top 5 per company
+            query = """
+                SELECT 
+                    company_code,
+                    year,
+                    cash_dividend,
+                    dividend_shares,
+                    close_price,
+                    type,
+                    cum_date,
+                    ex_date,
+                    recording_date,
+                    payment_date,
+                    payout_ratio
+                FROM idn_dividend
+                WHERE company_code IS NOT NULL AND company_code != ''
+                ORDER BY company_code ASC, year DESC
+            """
+            
+            cursor.execute(query)
+            columns = [col[0] for col in cursor.description]
+            
+            # Track count per company to limit to 5
+            company_counts: Dict[str, int] = defaultdict(int)
+            
+            for row in cursor:
+                row_dict = dict(zip(columns, row))
+                company_code = row_dict.get('company_code', '')
+                
+                # Skip if already have 5 for this company
+                if company_counts[company_code] >= 5:
+                    continue
+                
+                company_counts[company_code] += 1
+                
+                # Parse numeric values safely
+                try:
+                    dps_str = str(row_dict.get('dividend_shares', '') or '0')
+                    dps = float(dps_str.replace(',', '').strip()) if dps_str else 0.0
+                except (ValueError, AttributeError):
+                    dps = 0.0
+                
+                try:
+                    close_str = str(row_dict.get('close_price', '') or '0')
+                    close_price = float(close_str.replace(',', '').strip()) if close_str else 0.0
+                except (ValueError, AttributeError):
+                    close_price = 0.0
+                
+                try:
+                    cash_str = str(row_dict.get('cash_dividend', '') or '0')
+                    cash_dividend = float(cash_str.replace(',', '').strip()) if cash_str else 0.0
+                except (ValueError, AttributeError):
+                    cash_dividend = 0.0
+                
+                # Calculate dividend yield
+                dividend_yield = (dps / close_price * 100) if close_price > 0 else 0.0
+                
+                # Format dates
+                def format_date(d):
+                    return str(d) if d else None
+                
+                dividends_by_company[company_code].append({
+                    'year': int(row_dict.get('year', 0)) if row_dict.get('year') else None,
+                    'total_cash_dividend': cash_dividend,
+                    'dividend_per_share': dps,
+                    'close_price': close_price,
+                    'dividend_yield': round(dividend_yield, 2),
+                    'type': row_dict.get('type', ''),
+                    'cum_date': format_date(row_dict.get('cum_date')),
+                    'ex_date': format_date(row_dict.get('ex_date')),
+                    'recording_date': format_date(row_dict.get('recording_date')),
+                    'payment_date': format_date(row_dict.get('payment_date')),
+                    'payout_ratio': row_dict.get('payout_ratio', ''),
+                })
+            
+            total_dividends = sum(len(v) for v in dividends_by_company.values())
+            logger.info(f"Fetched {total_dividends} dividends for {len(dividends_by_company)} companies")
+            
+    finally:
+        connection.close()
+    
+    return dict(dividends_by_company)
+
+
+def format_dividends_for_text(dividends: List[Dict[str, Any]], max_display: int = 3) -> str:
+    """
+    Format dividend data into natural language for embedding.
+    
+    Args:
+        dividends: List of dividend dicts
+        max_display: Max dividends to include in text
+        
+    Returns:
+        Natural language description of dividends
+    """
+    if not dividends:
+        return ""
+    
+    parts = []
+    parts.append("Riwayat Dividen:")
+    
+    for div in dividends[:max_display]:
+        year = div.get('year', 'N/A')
+        dps = div.get('dividend_per_share', 0)
+        div_yield = div.get('dividend_yield', 0)
+        div_type = div.get('type', '')
+        
+        # Use clear, standard naming for AI understanding
+        line = f"- Tahun {year}: Dividend Per Share Rp {dps:,.0f} (Dividend Yield: {div_yield:.2f}%)"
+        if div_type:
+            line += f" [{div_type}]"
+        parts.append(line)
+    
+    if len(dividends) > max_display:
+        parts.append(f"- ...dan {len(dividends) - max_display} dividen lainnya")
+    
+    return "\n".join(parts)
+
+
+# =============================================================================
 # ROW SERIALIZATION (Tabular → Natural Language)
 # =============================================================================
 
@@ -497,19 +646,24 @@ def _extract_year(date_val) -> Optional[int]:
         return None
 
 
-def serialize_row(row: Dict[str, Any], shareholders: Optional[List[Dict[str, Any]]] = None) -> str:
+def serialize_row(
+    row: Dict[str, Any], 
+    shareholders: Optional[List[Dict[str, Any]]] = None,
+    dividends: Optional[List[Dict[str, Any]]] = None
+) -> str:
     """
     Convert company data into natural language for embedding.
     
     Optimized for RAG queries about Indonesian listed companies.
     Includes listing date for date-based semantic search.
-    Now includes shareholder data for ownership queries.
+    Now includes shareholder and dividend data.
     
     Example:
         Input:  {'name': 'PT. Eagle High Plantations Tbk', 'exchange': 'BWPT', ...}
         Output: "PT. Eagle High Plantations Tbk (BWPT)
                  PT Eagle High Plantations Tbk was initiated in 2000...
-                 Pemegang Saham Utama: ..."
+                 Pemegang Saham Utama: ...
+                 Riwayat Dividen: ..."
     """
     name = row.get('name', 'Unknown Company')
     exchange = row.get('exchange', '')
@@ -555,11 +709,17 @@ def serialize_row(row: Dict[str, Any], shareholders: Optional[List[Dict[str, Any
     if context_parts:
         parts.append(" | ".join(context_parts))
     
-    # NEW: Add shareholder information for semantic search
+    # Add shareholder information for semantic search
     if shareholders:
         shareholder_text = format_shareholders_for_text(shareholders)
         if shareholder_text:
             parts.append(shareholder_text)
+    
+    # Add dividend information for semantic search
+    if dividends:
+        dividend_text = format_dividends_for_text(dividends)
+        if dividend_text:
+            parts.append(dividend_text)
     
     return "\n\n".join(parts)
 
@@ -627,6 +787,7 @@ def process_and_upsert_batch(
     config: QdrantConfig,
     start_id: int,
     shareholders_map: Dict[str, List[Dict[str, Any]]],
+    dividends_map: Dict[str, List[Dict[str, Any]]],
     dry_run: bool = False
 ) -> int:
     """
@@ -639,6 +800,7 @@ def process_and_upsert_batch(
         config: Qdrant configuration
         start_id: Starting point ID for this batch
         shareholders_map: Dict mapping company code to shareholder list
+        dividends_map: Dict mapping company code to dividend list
         dry_run: If True, skip actual upsert
         
     Returns:
@@ -647,12 +809,13 @@ def process_and_upsert_batch(
     if not batch:
         return 0
     
-    # Step 1: Serialize rows to natural language (with shareholders)
+    # Step 1: Serialize rows to natural language (with shareholders and dividends)
     texts = []
     for row in batch:
         exchange = row.get('exchange', '')
         company_shareholders = shareholders_map.get(exchange, [])
-        text = serialize_row(row, company_shareholders)
+        company_dividends = dividends_map.get(exchange, [])
+        text = serialize_row(row, company_shareholders, company_dividends)
         texts.append(text)
     
     # Step 2: Generate embeddings (both dense and sparse)
@@ -673,6 +836,14 @@ def process_and_upsert_batch(
         
         # Get shareholders for this company
         company_shareholders = shareholders_map.get(exchange, [])
+        # Get dividends for this company
+        company_dividends = dividends_map.get(exchange, [])
+        
+        # Extract latest dividend info for quick-access sorting/filtering
+        latest_dividend = company_dividends[0] if company_dividends else {}
+        latest_dividend_yield = latest_dividend.get('dividend_yield', 0) if latest_dividend else 0
+        latest_dps = latest_dividend.get('dividend_per_share', 0) if latest_dividend else 0
+        latest_dividend_year = latest_dividend.get('year') if latest_dividend else None
         
         point = PointStruct(
             id=point_id,
@@ -717,11 +888,17 @@ def process_and_upsert_batch(
                 # Financial ratios (numeric for filtering)
                 "price_earning_ratio": float(row.get('price_earning_ratio')) if row.get('price_earning_ratio') else None,
                 "earning_per_share": float(row.get('earning_per_share')) if row.get('earning_per_share') else None,
-                # NEW: Shareholder data (structured for filtering)
-                "shareholders": company_shareholders,  # All shareholders as list
+                # Shareholder data (structured for filtering)
+                "shareholders": company_shareholders,
                 "top_shareholder": company_shareholders[0].get('name') if company_shareholders else None,
                 "top_shareholder_percentage": company_shareholders[0].get('percentage') if company_shareholders else None,
                 "total_shareholders": len(company_shareholders),
+                # Dividend data (structured + quick-access fields)
+                "dividends": company_dividends,  # Full dividend history (5 years)
+                "latest_dividend_yield": latest_dividend_yield,  # For sorting: yield tertinggi
+                "latest_dividend_per_share": latest_dps,  # For sorting: DPS terbesar
+                "latest_dividend_year": latest_dividend_year,  # Year of latest dividend
+                "has_dividend": len(company_dividends) > 0,  # Boolean filter
                 # Source
                 "source": "idnfinancials.com",
                 # Serialized text for reference
@@ -786,12 +963,17 @@ def run_etl(
     # Setup collection
     setup_qdrant_collection(client, qdrant_config)
     
-    # NEW: Fetch shareholder data if enabled
+    # Fetch shareholder data if enabled
     shareholders_map: Dict[str, List[Dict[str, Any]]] = {}
     if etl_config.include_shareholders:
         logger.info("Fetching shareholder data...")
         shareholders_map = fetch_all_shareholders(mysql_config)
         logger.info(f"Loaded shareholders for {len(shareholders_map)} companies")
+    
+    # Fetch dividend data
+    logger.info("Fetching dividend data...")
+    dividends_map = fetch_all_dividends(mysql_config)
+    logger.info(f"Loaded dividends for {len(dividends_map)} companies")
     
     # Get row count for progress bar
     try:
@@ -822,6 +1004,7 @@ def run_etl(
                         config=qdrant_config,
                         start_id=total_processed + 1,
                         shareholders_map=shareholders_map,
+                        dividends_map=dividends_map,
                         dry_run=etl_config.dry_run,
                     )
                     total_processed += count
@@ -844,6 +1027,7 @@ def run_etl(
                     config=qdrant_config,
                     start_id=total_processed + 1,
                     shareholders_map=shareholders_map,
+                    dividends_map=dividends_map,
                     dry_run=etl_config.dry_run,
                 )
                 total_processed += count
@@ -865,6 +1049,7 @@ def run_etl(
         "rows_per_second": total_processed / duration if duration > 0 else 0,
         "collection_name": qdrant_config.collection_name,
         "shareholders_loaded": len(shareholders_map),
+        "dividends_loaded": len(dividends_map),
         "dry_run": etl_config.dry_run,
     }
     
