@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Load system prompt
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-SYSTEM_PROMPT = (PROMPTS_DIR / "system2.txt").read_text()
+SYSTEM_PROMPT = (PROMPTS_DIR / "system3.txt").read_text()
 
 
 class RAGService:
@@ -83,6 +83,40 @@ class RAGService:
                     reverse=sort_descending
                 )
                 logger.info(f"Sorted by {sort_field}, first 3: {[r.get('payload',{}).get('exchange') for r in results[:3]]}")
+                
+                # DUAL-CRITERIA DETECTION: Check if query asks for both gainers AND losers
+                query_lower = query.lower()
+                is_dual_criteria = (
+                    ('dan' in query_lower or 'and' in query_lower) and
+                    any(kw in query_lower for kw in ['keuntungan', 'gainer', 'naik', 'untung']) and
+                    any(kw in query_lower for kw in ['kerugian', 'loser', 'turun', 'rugi'])
+                )
+                
+                if is_dual_criteria and sort_field == 'percentage_price':
+                    # For dual-criteria, we need BOTH top gainers AND top losers
+                    # Current results are sorted one way, get the opposite too
+                    logger.info("Dual-criteria detected: getting both gainers and losers")
+                    
+                    # Top 10 from current sort (gainers if desc, losers if asc)
+                    first_set = results[:10]
+                    
+                    # Sort opposite direction for the other criteria
+                    opposite_results = sorted(
+                        results,
+                        key=lambda x: x.get("payload", {}).get(sort_field) or 0,
+                        reverse=not sort_descending  # Opposite direction
+                    )
+                    second_set = opposite_results[:10]
+                    
+                    # Combine both sets, removing duplicates
+                    seen_ids = {r.get("id") for r in first_set}
+                    for r in second_set:
+                        if r.get("id") not in seen_ids:
+                            first_set.append(r)
+                            seen_ids.add(r.get("id"))
+                    
+                    results = first_set
+                    logger.info(f"Dual-criteria: combined {len(results)} results")
         else:
             # Use semantic vector search ONLY for descriptive queries (no filter, no sort)
             dense_vector, sparse_vector = await self.ai_client.embed(search_text)
@@ -296,6 +330,41 @@ EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}{dividends_te
             context += "\n".join(dividend_summary_parts[:50])  # Max 50 for token limit
             if len(dividend_summary_parts) > 50:
                 context += f"\n...dan {len(dividend_summary_parts) - 50} perusahaan lainnya"
+        
+        # Add GAINERS + LOSERS SUMMARY for dual-criteria queries
+        query_lower = query.lower()
+        is_dual_criteria = (
+            ('dan' in query_lower or 'and' in query_lower) and
+            any(kw in query_lower for kw in ['keuntungan', 'gainer', 'naik', 'untung']) and
+            any(kw in query_lower for kw in ['kerugian', 'loser', 'turun', 'rugi'])
+        )
+        
+        if is_dual_criteria:
+            # Sort all results by percentage_price for gainers/losers summary
+            sorted_by_price = sorted(
+                results,
+                key=lambda x: x.get("payload", {}).get("percentage_price") or 0,
+                reverse=True
+            )
+            
+            # Top 5 Gainers (highest % change)
+            gainers_parts = ["\n\n[TOP GAINERS - Keuntungan Terbesar]"]
+            for r in sorted_by_price[:5]:
+                p = r.get("payload", {})
+                gainers_parts.append(f"- {p.get('name')} ({p.get('exchange')}): {p.get('percentage_price', 0):+.2f}%")
+            context += "\n".join(gainers_parts)
+            
+            # Top 5 Losers (lowest/most negative % change)
+            losers_parts = ["\n\n[TOP LOSERS - Kerugian Terbesar]"]
+            for r in sorted_by_price[-5:][::-1]:  # Last 5, reversed to show most negative first
+                p = r.get("payload", {})
+                pct = p.get('percentage_price', 0)
+                if pct < 0:  # Only show actual losers
+                    losers_parts.append(f"- {p.get('name')} ({p.get('exchange')}): {pct:+.2f}%")
+            if len(losers_parts) > 1:
+                context += "\n".join(losers_parts)
+            else:
+                context += "\n\n[TOP LOSERS - Kerugian Terbesar]\nTidak ada saham dengan perubahan negatif dalam data saat ini."
         
         return sources, context
     
