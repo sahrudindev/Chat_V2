@@ -1,0 +1,67 @@
+{
+    "id": "idnfinancials-about",
+    "name": "IDN Financials",
+    "type": "platform",
+    "description": "IDN Financials is a Video and Technological Platform dedicated to the Indonesia Stock Exchange. The platform partners with leading data providers, news outlets, and companies to curate and process high-quality financial information for its audience.",
+    "mission": "To better educate and inform the Indonesian public and regional investors about the Indonesian stock market, while promoting and pushing for greater transparency within the country's financial industry.",
+    "vision": "To become the premier destination for local and regional investors seeking the latest news and detailed information about Indonesian public companies.",
+    "editorial_office": {
+        "address": "Plaza Mutiara, 5th Floor, Suite 502",
+        "street": "Jl. Dr. Ide Anak Agung Gde Agung, Kuningan",
+        "city": "Jakarta 12950",
+        "country": "Indonesia",
+        "full_address": "Plaza Mutiara, 5th Floor, Suite 502, Jl. Dr. Ide Anak Agung Gde Agung, Kuningan, Jakarta 12950 - Indonesia",
+        "phone": "(+62) 21 5082 3418",
+        "email": [
+            "info@idnfinancials.com",
+            "redaksi@idnfinancials.com"
+        ]
+    },
+    "website": "https://www.idnfinancials.com",
+    "publisher": "PT AP&M Indonesia",
+    "board_of_directors": {
+        "president_commissioner": "Harianto Solichin",
+        "president_director": "Ignatius Budiman",
+        "production_director": "Alexander M. Harry",
+        "operational_director": "Anna Marwiyati"
+    },
+    "editorial": {
+        "editor_in_chief": "Mohamad Teguh",
+        "editor": "Luther Kembaren",
+        "reporters": [
+            "Zetta Hannany",
+            "Kholid Rafsanjani",
+            "Dhika Priambodo",
+            "Lisa Monica (Irlandia)",
+            "Nina Rosdiana (Jepang)",
+            "Edward Caesar (Jepang)"
+        ],
+        "editorial_secretary": "Yayang Syarif Hidayat"
+    },
+    "video_and_photographer": [
+        "VF. Adhi Susilo",
+        "Arif Kurniawan"
+    ],
+    "marketing": {
+        "marketing_cooperation": "Effendi",
+        "digital_marketing": "Edo Radityo B. Sadewo",
+        "graphic_design": "Rega Alchalabi",
+        "social_media": "Arif Kurniawan"
+    },
+    "information_technology": [
+        "Nurhadi",
+        "Fajar Rahman Hakim",
+        "Faizal Abdul Hakim"
+    ],
+    "data_analyst": [
+        "Irma",
+        "Ramdhani Pratama",
+        "Edward Caesar",
+        "Sahrudin Fiqri Muzahidat"
+    ],
+    "Search_Engine_Optimization(SEO)": [
+        "Sahrudin Fiqri Muzahidat"
+    ],
+    "source_url": "https://www.idnfinancials.com/about-us",
+    "last_updated": "2026-01-21"
+}
