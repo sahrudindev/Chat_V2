@@ -670,6 +670,8 @@
             <h1>IDN Financials AI Assistant</h1>
             <span class="subtitle">Market Data & Financial Insights</span>
         </div>
+        <span id="sessionIndicator" class="status-badge"
+            style="background: rgba(30,58,95,0.5); margin-right: 8px; display: none;">Session: --</span>
         <span class="status-badge">Online</span>
     </header>
 
@@ -724,7 +726,8 @@
         const input = document.getElementById('input');
         const sendBtn = document.getElementById('sendBtn');
         const quickActions = document.getElementById('quickActions');
-        let history = [];
+        let history = [];  // Local history for UI display only
+        let sessionId = null;  // Server-managed session identifier
 
         // Configure marked.js
         marked.setOptions({
@@ -779,7 +782,7 @@
             input.value = '';
             sendBtn.disabled = true;
 
-            // Add user message
+            // Add user message to local display
             addMessage(text, 'user');
             history.push({ role: 'user', content: text });
 
@@ -787,12 +790,14 @@
             const typing = addTyping();
 
             try {
+                // Send message with session_id (server manages history)
+                console.log('[Session] Sending request with session_id:', sessionId?.substring(0, 8) || 'null');
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         message: text,
-                        history: history.slice(-6)
+                        session_id: sessionId  // Server manages conversation history
                     })
                 });
 
@@ -800,7 +805,19 @@
 
                 if (response.ok) {
                     const data = await response.json();
+                    // Store session_id for conversation continuity
+                    console.log('[Session] Received:', data.session_id?.substring(0, 8), '| Current:', sessionId?.substring(0, 8));
+                    sessionId = data.session_id;
+
+                    // Update visual session indicator
+                    const indicator = document.getElementById('sessionIndicator');
+                    if (indicator && sessionId) {
+                        indicator.textContent = 'Session: ' + sessionId.substring(0, 8);
+                        indicator.style.display = 'inline-flex';
+                    }
+
                     addMessage(data.answer, 'assistant', data.sources);
+                    // Local history still used for UI display only
                     history.push({ role: 'assistant', content: data.answer });
                 } else {
                     addMessage('Sorry, an error occurred. Please try again.', 'assistant');

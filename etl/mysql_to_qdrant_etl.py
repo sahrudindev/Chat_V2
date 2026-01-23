@@ -607,6 +607,467 @@ def format_dividends_for_text(dividends: List[Dict[str, Any]], max_display: int 
 
 
 # =============================================================================
+# FINANCIAL DATA FETCHING (ks_financial + ks_financial_bank)
+# =============================================================================
+
+def _parse_numeric(value: Any) -> Optional[float]:
+    """Safely parse a numeric value from VARCHAR."""
+    if value is None or value == '':
+        return None
+    try:
+        # Remove commas and convert
+        clean = str(value).replace(',', '').strip()
+        return float(clean) if clean else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_period_key(asof_date: str) -> tuple:
+    """Parse period string like 'Q4/2024' into sortable tuple (year, quarter)."""
+    if not asof_date:
+        return (0, 0)
+    try:
+        parts = asof_date.split('/')
+        if len(parts) == 2:
+            quarter = int(parts[0].replace('Q', ''))
+            year = int(parts[1])
+            return (year, quarter)
+    except:
+        pass
+    return (0, 0)
+
+
+def fetch_all_financials(config: MySQLConfig) -> Dict[str, Dict[str, Any]]:
+    """
+    Fetch financial data from ks_financial and ks_financial_bank.
+    
+    Returns dict mapping company code to financial data including:
+    - Latest quarter data
+    - 4 quarter history
+    - YoY comparison
+    - Banking-specific metrics if applicable
+    
+    Returns:
+        Dict mapping company code to financial data dict
+    """
+    logger.info("Fetching financial data from MySQL...")
+    
+    connection = pymysql.connect(
+        host=config.host,
+        port=config.port,
+        user=config.user,
+        password=config.password,
+        database=config.database,
+        charset=config.charset,
+    )
+    
+    financials_by_company: Dict[str, Dict[str, Any]] = {}
+    
+    try:
+        with connection.cursor() as cursor:
+            # ============================================
+            # FETCH NON-BANK FINANCIAL DATA (ks_financial)
+            # ============================================
+            query_financial = """
+                SELECT 
+                    exchange,
+                    asof_date,
+                    revenue,
+                    cogs,
+                    gross_profit,
+                    gross_margin,
+                    operating_expense,
+                    operating_profit,
+                    operating_margin,
+                    net_profit,
+                    net_margin,
+                    total_shares,
+                    eps,
+                    current_assets,
+                    ar_lancar,
+                    ar_lancarp,
+                    ar_1m,
+                    ar_1mp,
+                    ar_2m,
+                    ar_2mp,
+                    ar_3m,
+                    ar_3mp,
+                    ar_4m,
+                    ar_4mp,
+                    ar_g4m,
+                    ar_g4mp,
+                    ar_total,
+                    non_current_assets,
+                    tax_assets,
+                    total_assets,
+                    current_liabilities,
+                    non_current_liabilities,
+                    tax_liabilities,
+                    total_liabilities,
+                    total_equity,
+                    minority_interest,
+                    roa,
+                    roe,
+                    net_cash,
+                    cash_on_hand,
+                    currency,
+                    idr_rate
+                FROM ks_financial
+                WHERE exchange IS NOT NULL AND exchange != ''
+                ORDER BY exchange ASC, 
+                         CAST(SUBSTRING_INDEX(asof_date, '/', -1) AS UNSIGNED) DESC,
+                         CAST(REPLACE(SUBSTRING_INDEX(asof_date, '/', 1), 'Q', '') AS UNSIGNED) DESC
+            """
+            
+            cursor.execute(query_financial)
+            columns = [col[0] for col in cursor.description]
+            
+            # Group by company, keep latest 8 quarters (for YoY comparison)
+            company_records: Dict[str, List[Dict]] = defaultdict(list)
+            
+            for row in cursor:
+                row_dict = dict(zip(columns, row))
+                company = row_dict.get('exchange', '')
+                if company and len(company_records[company]) < 8:
+                    company_records[company].append(row_dict)
+            
+            logger.info(f"Fetched financial data for {len(company_records)} non-bank companies")
+            
+            # ============================================
+            # FETCH BANK FINANCIAL DATA (ks_financial_bank)
+            # ============================================
+            query_bank = """
+                SELECT 
+                    exchange,
+                    asof_date,
+                    net_interest_income,
+                    operating_expense,
+                    operating_profit,
+                    net_profit,
+                    total_shares,
+                    eps,
+                    total_assets,
+                    total_liabilities,
+                    total_equity,
+                    minority_interest,
+                    car,
+                    ldr,
+                    npl,
+                    roe,
+                    roa,
+                    net_cash,
+                    cash_on_hand,
+                    currency
+                FROM ks_financial_bank
+                WHERE exchange IS NOT NULL AND exchange != ''
+                ORDER BY exchange ASC,
+                         CAST(SUBSTRING_INDEX(asof_date, '/', -1) AS UNSIGNED) DESC,
+                         CAST(REPLACE(SUBSTRING_INDEX(asof_date, '/', 1), 'Q', '') AS UNSIGNED) DESC
+            """
+            
+            cursor.execute(query_bank)
+            columns_bank = [col[0] for col in cursor.description]
+            
+            bank_records: Dict[str, List[Dict]] = defaultdict(list)
+            
+            for row in cursor:
+                row_dict = dict(zip(columns_bank, row))
+                company = row_dict.get('exchange', '')
+                if company and len(bank_records[company]) < 8:
+                    bank_records[company].append(row_dict)
+            
+            logger.info(f"Fetched financial data for {len(bank_records)} bank companies")
+            
+            # ============================================
+            # PROCESS AND STRUCTURE DATA
+            # ============================================
+            
+            # Process non-bank companies
+            for company, records in company_records.items():
+                if not records:
+                    continue
+                
+                latest = records[0]
+                financials_by_company[company] = _process_financial_records(
+                    records, is_bank=False
+                )
+            
+            # Process bank companies (will override non-bank if exists)
+            for company, records in bank_records.items():
+                if not records:
+                    continue
+                
+                financials_by_company[company] = _process_financial_records(
+                    records, is_bank=True
+                )
+            
+            logger.info(f"Processed financial data for {len(financials_by_company)} total companies")
+            
+    finally:
+        connection.close()
+    
+    return financials_by_company
+
+
+def _process_financial_records(records: List[Dict], is_bank: bool) -> Dict[str, Any]:
+    """
+    Process financial records into structured data.
+    
+    Args:
+        records: List of financial records (sorted by date descending)
+        is_bank: Whether this is bank data
+        
+    Returns:
+        Structured financial data dict
+    """
+    if not records:
+        return {}
+    
+    latest = records[0]
+    
+    # Find same quarter from previous year for YoY comparison
+    latest_period = latest.get('asof_date', '')
+    latest_year, latest_quarter = _parse_period_key(latest_period)
+    
+    prev_year_record = None
+    for rec in records:
+        rec_year, rec_quarter = _parse_period_key(rec.get('asof_date', ''))
+        if rec_year == latest_year - 1 and rec_quarter == latest_quarter:
+            prev_year_record = rec
+            break
+    
+    # Build 4-quarter history
+    history = []
+    for rec in records[:4]:
+        hist_item = {
+            'period': rec.get('asof_date', ''),
+            'net_profit': _parse_numeric(rec.get('net_profit')),
+            'roe': _parse_numeric(rec.get('roe')),
+            'roa': _parse_numeric(rec.get('roa')),
+        }
+        
+        if is_bank:
+            hist_item['car'] = _parse_numeric(rec.get('car'))
+            hist_item['npl'] = _parse_numeric(rec.get('npl'))
+            hist_item['ldr'] = _parse_numeric(rec.get('ldr'))
+        else:
+            hist_item['revenue'] = _parse_numeric(rec.get('revenue'))
+            hist_item['gross_margin'] = _parse_numeric(rec.get('gross_margin'))
+            hist_item['operating_margin'] = _parse_numeric(rec.get('operating_margin'))
+            hist_item['net_margin'] = _parse_numeric(rec.get('net_margin'))
+        
+        history.append(hist_item)
+    
+    # Calculate YoY growth
+    latest_net_profit = _parse_numeric(latest.get('net_profit'))
+    prev_net_profit = _parse_numeric(prev_year_record.get('net_profit')) if prev_year_record else None
+    
+    net_profit_yoy_growth = None
+    if latest_net_profit and prev_net_profit and prev_net_profit != 0:
+        net_profit_yoy_growth = ((latest_net_profit - prev_net_profit) / abs(prev_net_profit)) * 100
+    
+    revenue_yoy_growth = None
+    if not is_bank:
+        latest_revenue = _parse_numeric(latest.get('revenue'))
+        prev_revenue = _parse_numeric(prev_year_record.get('revenue')) if prev_year_record else None
+        if latest_revenue and prev_revenue and prev_revenue != 0:
+            revenue_yoy_growth = ((latest_revenue - prev_revenue) / abs(prev_revenue)) * 100
+    
+    # Build result
+    result = {
+        'is_bank': is_bank,
+        'financial_period': latest_period,
+        
+        # Latest values
+        'net_profit': _parse_numeric(latest.get('net_profit')),
+        'total_shares': _parse_numeric(latest.get('total_shares')),
+        'eps': _parse_numeric(latest.get('eps')),
+        'total_assets': _parse_numeric(latest.get('total_assets')),
+        'total_liabilities': _parse_numeric(latest.get('total_liabilities')),
+        'total_equity': _parse_numeric(latest.get('total_equity')),
+        'roe': _parse_numeric(latest.get('roe')),
+        'roa': _parse_numeric(latest.get('roa')),
+        'net_cash': _parse_numeric(latest.get('net_cash')),
+        'cash_on_hand': _parse_numeric(latest.get('cash_on_hand')),
+        
+        # YoY Growth
+        'net_profit_yoy_growth': round(net_profit_yoy_growth, 2) if net_profit_yoy_growth else None,
+        
+        # Previous year values (for comparison)
+        'net_profit_prev_year': _parse_numeric(prev_year_record.get('net_profit')) if prev_year_record else None,
+        'roe_prev_year': _parse_numeric(prev_year_record.get('roe')) if prev_year_record else None,
+        
+        # History
+        'financial_history': history,
+    }
+    
+    if is_bank:
+        # Banking-specific metrics
+        # Calculate ROE and ROA since ks_financial_bank doesn't have them
+        net_profit = _parse_numeric(latest.get('net_profit'))
+        total_assets = _parse_numeric(latest.get('total_assets'))
+        total_equity = _parse_numeric(latest.get('total_equity'))
+        
+        calculated_roe = None
+        calculated_roa = None
+        
+        if net_profit and total_equity and total_equity != 0:
+            calculated_roe = round((net_profit / total_equity) * 100, 2)
+        
+        if net_profit and total_assets and total_assets != 0:
+            calculated_roa = round((net_profit / total_assets) * 100, 2)
+        
+        # Update ROE/ROA with calculated values
+        result['roe'] = calculated_roe
+        result['roa'] = calculated_roa
+        
+        result.update({
+            'net_interest_income': _parse_numeric(latest.get('net_interest_income')),
+            'operating_expense': _parse_numeric(latest.get('operating_expense')),
+            'operating_profit': _parse_numeric(latest.get('operating_profit')),
+        })
+    else:
+        # Non-bank metrics
+        result.update({
+            'revenue': _parse_numeric(latest.get('revenue')),
+            'cogs': _parse_numeric(latest.get('cogs')),
+            'gross_profit': _parse_numeric(latest.get('gross_profit')),
+            'gross_margin': _parse_numeric(latest.get('gross_margin')),
+            'operating_expense': _parse_numeric(latest.get('operating_expense')),
+            'operating_profit': _parse_numeric(latest.get('operating_profit')),
+            'operating_margin': _parse_numeric(latest.get('operating_margin')),
+            'net_margin': _parse_numeric(latest.get('net_margin')),
+            'current_assets': _parse_numeric(latest.get('current_assets')),
+            'non_current_assets': _parse_numeric(latest.get('non_current_assets')),
+            'current_liabilities': _parse_numeric(latest.get('current_liabilities')),
+            'non_current_liabilities': _parse_numeric(latest.get('non_current_liabilities')),
+            'revenue_yoy_growth': round(revenue_yoy_growth, 2) if revenue_yoy_growth else None,
+            # Accounts Receivable Aging
+            'ar_lancar': _parse_numeric(latest.get('ar_lancar')),
+            'ar_lancarp': _parse_numeric(latest.get('ar_lancarp')),
+            'ar_1m': _parse_numeric(latest.get('ar_1m')),
+            'ar_1mp': _parse_numeric(latest.get('ar_1mp')),
+            'ar_2m': _parse_numeric(latest.get('ar_2m')),
+            'ar_2mp': _parse_numeric(latest.get('ar_2mp')),
+            'ar_3m': _parse_numeric(latest.get('ar_3m')),
+            'ar_3mp': _parse_numeric(latest.get('ar_3mp')),
+            'ar_4m': _parse_numeric(latest.get('ar_4m')),
+            'ar_4mp': _parse_numeric(latest.get('ar_4mp')),
+            'ar_g4m': _parse_numeric(latest.get('ar_g4m')),
+            'ar_g4mp': _parse_numeric(latest.get('ar_g4mp')),
+            'ar_total': _parse_numeric(latest.get('ar_total')),
+            # Tax
+            'tax_assets': _parse_numeric(latest.get('tax_assets')),
+            'tax_liabilities': _parse_numeric(latest.get('tax_liabilities')),
+            # Currency
+            'idr_rate': _parse_numeric(latest.get('idr_rate')),
+            'currency': latest.get('currency'),
+        })
+    
+    return result
+
+
+def format_financials_for_text(financials: Dict[str, Any]) -> str:
+    """
+    Format financial data into natural language for embedding.
+    
+    Creates rich text that helps semantic search find financial queries.
+    
+    Args:
+        financials: Financial data dict from fetch_all_financials
+        
+    Returns:
+        Natural language description of financials
+    """
+    if not financials:
+        return ""
+    
+    parts = []
+    period = financials.get('financial_period', 'N/A')
+    is_bank = financials.get('is_bank', False)
+    
+    # Header
+    parts.append(f"📊 Laporan Keuangan ({period}):")
+    
+    # Main metrics
+    net_profit = financials.get('net_profit')
+    roe = financials.get('roe')
+    roa = financials.get('roa')
+    
+    if net_profit:
+        net_profit_fmt = _format_rupiah(net_profit)
+        yoy = financials.get('net_profit_yoy_growth')
+        yoy_str = f" ({yoy:+.1f}% YoY)" if yoy else ""
+        parts.append(f"- Net Profit: {net_profit_fmt}{yoy_str}")
+    
+    if not is_bank:
+        # Non-bank specific
+        revenue = financials.get('revenue')
+        if revenue:
+            revenue_fmt = _format_rupiah(revenue)
+            rev_yoy = financials.get('revenue_yoy_growth')
+            rev_yoy_str = f" ({rev_yoy:+.1f}% YoY)" if rev_yoy else ""
+            parts.append(f"- Revenue: {revenue_fmt}{rev_yoy_str}")
+        
+        gross_margin = financials.get('gross_margin')
+        if gross_margin:
+            parts.append(f"- Gross Margin: {gross_margin:.1f}%")
+        
+        net_margin = financials.get('net_margin')
+        if net_margin:
+            parts.append(f"- Net Margin: {net_margin:.1f}%")
+    
+    if roe:
+        parts.append(f"- ROE: {roe:.2f}%")
+    if roa:
+        parts.append(f"- ROA: {roa:.2f}%")
+    
+    # Banking-specific - Net Interest Income
+    if is_bank:
+        nii = financials.get('net_interest_income')
+        if nii:
+            parts.append(f"- Net Interest Income: {_format_rupiah(nii)}")
+    
+    # 4-Quarter Trend
+    history = financials.get('financial_history', [])
+    if len(history) >= 2:
+        parts.append(f"\n📈 Trend {len(history)} Quarter:")
+        for hist in history:
+            hist_period = hist.get('period', '')
+            hist_np = hist.get('net_profit')
+            hist_roe = hist.get('roe')
+            
+            line_parts = [f"- {hist_period}:"]
+            if hist_np:
+                line_parts.append(f"Net Profit {_format_rupiah(hist_np)}")
+            if hist_roe:
+                line_parts.append(f"ROE {hist_roe:.1f}%")
+            
+            if len(line_parts) > 1:
+                parts.append(" | ".join(line_parts))
+    
+    return "\n".join(parts)
+
+
+def _format_rupiah(value: float) -> str:
+    """Format large numbers in Rupiah with T/M suffix."""
+    if value is None:
+        return "N/A"
+    
+    abs_value = abs(value)
+    sign = "-" if value < 0 else ""
+    
+    if abs_value >= 1_000_000_000_000:
+        return f"{sign}Rp {abs_value / 1_000_000_000_000:.1f} T"
+    elif abs_value >= 1_000_000_000:
+        return f"{sign}Rp {abs_value / 1_000_000_000:.1f} M"
+    elif abs_value >= 1_000_000:
+        return f"{sign}Rp {abs_value / 1_000_000:.1f} Jt"
+    else:
+        return f"{sign}Rp {abs_value:,.0f}"
+
+
+# =============================================================================
 # ROW SERIALIZATION (Tabular → Natural Language)
 # =============================================================================
 
@@ -649,21 +1110,23 @@ def _extract_year(date_val) -> Optional[int]:
 def serialize_row(
     row: Dict[str, Any], 
     shareholders: Optional[List[Dict[str, Any]]] = None,
-    dividends: Optional[List[Dict[str, Any]]] = None
+    dividends: Optional[List[Dict[str, Any]]] = None,
+    financials: Optional[Dict[str, Any]] = None
 ) -> str:
     """
     Convert company data into natural language for embedding.
     
     Optimized for RAG queries about Indonesian listed companies.
     Includes listing date for date-based semantic search.
-    Now includes shareholder and dividend data.
+    Now includes shareholder, dividend, and financial statement data.
     
     Example:
         Input:  {'name': 'PT. Eagle High Plantations Tbk', 'exchange': 'BWPT', ...}
         Output: "PT. Eagle High Plantations Tbk (BWPT)
                  PT Eagle High Plantations Tbk was initiated in 2000...
                  Pemegang Saham Utama: ...
-                 Riwayat Dividen: ..."
+                 Riwayat Dividen: ...
+                 📊 Laporan Keuangan: ..."
     """
     name = row.get('name', 'Unknown Company')
     exchange = row.get('exchange', '')
@@ -708,6 +1171,12 @@ def serialize_row(
     
     if context_parts:
         parts.append(" | ".join(context_parts))
+    
+    # Add financial statement data for semantic search
+    if financials:
+        financial_text = format_financials_for_text(financials)
+        if financial_text:
+            parts.append(financial_text)
     
     # Add shareholder information for semantic search
     if shareholders:
@@ -788,6 +1257,7 @@ def process_and_upsert_batch(
     start_id: int,
     shareholders_map: Dict[str, List[Dict[str, Any]]],
     dividends_map: Dict[str, List[Dict[str, Any]]],
+    financials_map: Dict[str, Dict[str, Any]] = None,
     dry_run: bool = False
 ) -> int:
     """
@@ -801,6 +1271,7 @@ def process_and_upsert_batch(
         start_id: Starting point ID for this batch
         shareholders_map: Dict mapping company code to shareholder list
         dividends_map: Dict mapping company code to dividend list
+        financials_map: Dict mapping company code to financial data
         dry_run: If True, skip actual upsert
         
     Returns:
@@ -809,13 +1280,17 @@ def process_and_upsert_batch(
     if not batch:
         return 0
     
-    # Step 1: Serialize rows to natural language (with shareholders and dividends)
+    if financials_map is None:
+        financials_map = {}
+    
+    # Step 1: Serialize rows to natural language (with shareholders, dividends, and financials)
     texts = []
     for row in batch:
         exchange = row.get('exchange', '')
         company_shareholders = shareholders_map.get(exchange, [])
         company_dividends = dividends_map.get(exchange, [])
-        text = serialize_row(row, company_shareholders, company_dividends)
+        company_financials = financials_map.get(exchange, {})
+        text = serialize_row(row, company_shareholders, company_dividends, company_financials)
         texts.append(text)
     
     # Step 2: Generate embeddings (both dense and sparse)
@@ -838,12 +1313,31 @@ def process_and_upsert_batch(
         company_shareholders = shareholders_map.get(exchange, [])
         # Get dividends for this company
         company_dividends = dividends_map.get(exchange, [])
+        # Get financials for this company
+        company_financials = financials_map.get(exchange, {})
         
         # Extract latest dividend info for quick-access sorting/filtering
         latest_dividend = company_dividends[0] if company_dividends else {}
         latest_dividend_yield = latest_dividend.get('dividend_yield', 0) if latest_dividend else 0
         latest_dps = latest_dividend.get('dividend_per_share', 0) if latest_dividend else 0
         latest_dividend_year = latest_dividend.get('year') if latest_dividend else None
+        
+        # Calculate P/BV ratio if we have the data
+        close_price = float(row.get('close_price')) if row.get('close_price') else None
+        total_shares = company_financials.get('total_shares')
+        total_equity = company_financials.get('total_equity')
+        
+        pbv_ratio = None
+        if close_price and total_shares and total_equity and total_equity > 0:
+            book_value_per_share = total_equity / total_shares
+            if book_value_per_share > 0:
+                pbv_ratio = round(close_price / book_value_per_share, 2)
+        
+        # Calculate DER ratio
+        total_liabilities = company_financials.get('total_liabilities')
+        der_ratio = None
+        if total_liabilities and total_equity and total_equity > 0:
+            der_ratio = round(total_liabilities / total_equity, 2)
         
         point = PointStruct(
             id=point_id,
@@ -871,7 +1365,7 @@ def process_and_upsert_batch(
                 # Listing year as INTEGER for Range filtering
                 "listing_year": _extract_year(row.get('listing')),
                 # Price data (numeric for filtering)
-                "close_price": float(row.get('close_price')) if row.get('close_price') else None,
+                "close_price": close_price,
                 "open_price": float(row.get('open_price')) if row.get('open_price') else None,
                 "previous_price": float(row.get('previous_price')) if row.get('previous_price') else None,
                 "bid_price": float(row.get('bid_price')) if row.get('bid_price') else None,
@@ -885,9 +1379,61 @@ def process_and_upsert_batch(
                 "tradable_value": float(row.get('tradable_value')) if row.get('tradable_value') else None,
                 "total_frequency": int(row.get('total_frequency')) if row.get('total_frequency') else None,
                 "capitalization": float(row.get('capitalization')) if row.get('capitalization') else None,
-                # Financial ratios (numeric for filtering)
+                # Financial ratios from company table (numeric for filtering)
                 "price_earning_ratio": float(row.get('price_earning_ratio')) if row.get('price_earning_ratio') else None,
                 "earning_per_share": float(row.get('earning_per_share')) if row.get('earning_per_share') else None,
+                
+                # === NEW: FINANCIAL STATEMENT DATA ===
+                "financial_period": company_financials.get('financial_period'),
+                "is_bank": company_financials.get('is_bank', False),
+                
+                # Profitability
+                "revenue": company_financials.get('revenue'),
+                "gross_profit": company_financials.get('gross_profit'),
+                "operating_profit": company_financials.get('operating_profit'),
+                "net_profit": company_financials.get('net_profit'),
+                
+                # Margins
+                "gross_margin": company_financials.get('gross_margin'),
+                "operating_margin": company_financials.get('operating_margin'),
+                "net_margin": company_financials.get('net_margin'),
+                
+                # Return ratios
+                "roe": company_financials.get('roe'),
+                "roa": company_financials.get('roa'),
+                
+                # Balance sheet
+                "total_assets": company_financials.get('total_assets'),
+                "total_liabilities": company_financials.get('total_liabilities'),
+                "total_equity": company_financials.get('total_equity'),
+                "current_assets": company_financials.get('current_assets'),
+                "current_liabilities": company_financials.get('current_liabilities'),
+                
+                # Calculated ratios
+                "pbv_ratio": pbv_ratio,
+                "der_ratio": der_ratio,
+                
+                # Cash
+                "net_cash": company_financials.get('net_cash'),
+                "cash_on_hand": company_financials.get('cash_on_hand'),
+                
+                # Banking-specific metrics
+                "car": company_financials.get('car'),
+                "ldr": company_financials.get('ldr'),
+                "npl": company_financials.get('npl'),
+                "net_interest_income": company_financials.get('net_interest_income'),
+                
+                # YoY Growth metrics
+                "net_profit_yoy_growth": company_financials.get('net_profit_yoy_growth'),
+                "revenue_yoy_growth": company_financials.get('revenue_yoy_growth'),
+                "net_profit_prev_year": company_financials.get('net_profit_prev_year'),
+                "roe_prev_year": company_financials.get('roe_prev_year'),
+                
+                # Quarterly history (for trend analysis)
+                "financial_history": company_financials.get('financial_history', []),
+                
+                # === END FINANCIAL DATA ===
+                
                 # Shareholder data (structured for filtering)
                 "shareholders": company_shareholders,
                 "top_shareholder": company_shareholders[0].get('name') if company_shareholders else None,
@@ -975,6 +1521,11 @@ def run_etl(
     dividends_map = fetch_all_dividends(mysql_config)
     logger.info(f"Loaded dividends for {len(dividends_map)} companies")
     
+    # Fetch financial statement data (ks_financial + ks_financial_bank)
+    logger.info("Fetching financial statement data...")
+    financials_map = fetch_all_financials(mysql_config)
+    logger.info(f"Loaded financials for {len(financials_map)} companies")
+    
     # Get row count for progress bar
     try:
         total_rows = count_rows(mysql_config)
@@ -1005,6 +1556,7 @@ def run_etl(
                         start_id=total_processed + 1,
                         shareholders_map=shareholders_map,
                         dividends_map=dividends_map,
+                        financials_map=financials_map,
                         dry_run=etl_config.dry_run,
                     )
                     total_processed += count
@@ -1028,6 +1580,7 @@ def run_etl(
                     start_id=total_processed + 1,
                     shareholders_map=shareholders_map,
                     dividends_map=dividends_map,
+                    financials_map=financials_map,
                     dry_run=etl_config.dry_run,
                 )
                 total_processed += count
@@ -1050,6 +1603,7 @@ def run_etl(
         "collection_name": qdrant_config.collection_name,
         "shareholders_loaded": len(shareholders_map),
         "dividends_loaded": len(dividends_map),
+        "financials_loaded": len(financials_map),
         "dry_run": etl_config.dry_run,
     }
     
@@ -1059,6 +1613,7 @@ def run_etl(
     logger.info(f"Total rows processed: {stats['total_rows_processed']:,}")
     logger.info(f"Total batches: {stats['total_batches']:,}")
     logger.info(f"Shareholders loaded for: {stats['shareholders_loaded']} companies")
+    logger.info(f"Financials loaded for: {stats['financials_loaded']} companies")
     logger.info(f"Duration: {stats['duration_seconds']:.2f} seconds")
     logger.info(f"Throughput: {stats['rows_per_second']:.2f} rows/second")
     logger.info(f"Collection: {stats['collection_name']}")

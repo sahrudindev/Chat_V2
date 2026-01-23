@@ -15,13 +15,15 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     """Chat request payload."""
     message: str = Field(..., description="User message", min_length=1)
-    history: List[ChatMessage] = Field(default=[], description="Chat history")
+    history: List[ChatMessage] = Field(default=[], description="Chat history (deprecated, server manages)")
+    session_id: Optional[str] = Field(default=None, description="Session identifier for conversation continuity")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "message": "Apa itu perusahaan kelapa sawit terbesar?",
-                "history": []
+                "history": [],
+                "session_id": None
             }
         }
 
@@ -39,6 +41,7 @@ class ChatResponse(BaseModel):
     answer: str = Field(..., description="Assistant response")
     sources: List[SourceDocument] = Field(default=[], description="Source documents")
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    session_id: str = Field(..., description="Session identifier for conversation continuity")
     
     class Config:
         json_schema_extra = {

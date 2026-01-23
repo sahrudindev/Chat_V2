@@ -124,17 +124,40 @@ QUESTIONS = [
     "Rekomendasi saham bank dengan P/E rendah?",
     "Saham dengan likuiditas tinggi dan harga stabil?",
     "Bank dengan kapitalisasi terbesar?",
-    "Rangkum profil 5 bank terbesar di Indonesia"
+    "Rangkum profil 5 bank terbesar di Indonesia",
+    
+    # === FINANCIAL STATEMENTS - NEW (101-120) ===
+    "ROE BBCA berapa?",
+    "ROA tertinggi di sektor perbankan?",
+    "Net profit TLKM Q4 2024?",
+    "Gross margin UNVR?",
+    "Net margin ASII berapa?",
+    "Operating margin perusahaan consumer?",
+    "Bank dengan NPL terendah?",
+    "CAR BBRI berapa?",
+    "LDR 4 bank BUMN?",
+    "Revenue ICBP Q4 2024?",
+    "Total aset BMRI?",
+    "Total equity BBCA?",
+    "P/BV ratio BBRI?",
+    "DER ratio ASII?",
+    "Trend net profit BBCA 2024?",
+    "Perbandingan ROE Q1 vs Q4 2024 TLKM?",
+    "Bank dengan CAR tertinggi?",
+    "Perusahaan dengan net margin terbaik?",
+    "Laba bersih GOTO Q4 2024?",
+    "Bagaimana performa keuangan 5 bank terbesar?"
 ]
 
 def test_chatbot():
     print("=" * 60)
-    print("Testing RAG Chatbot - 100 Questions")
+    print("Testing RAG Chatbot - 100 Questions (With Session Support)")
     print("=" * 60)
     
     success = 0
     failed = 0
     no_answer = 0
+    session_id = None  # Will be set after first request
     
     for i, question in enumerate(QUESTIONS, 1):
         print(f"\n[{i:03d}/100] {question}")
@@ -143,12 +166,13 @@ def test_chatbot():
         try:
             r = requests.post(
                 f"{WEB_CHATBOT}/chat",
-                json={"message": question, "history": []},
+                json={"message": question, "session_id": session_id},  # Include session_id
                 timeout=120
             )
             data = r.json()
             answer = data.get("answer", "")
             sources = data.get("sources", [])
+            session_id = data.get("session_id", session_id)  # Update session_id
             
             if "tidak memiliki informasi" in answer.lower():
                 print(f"❌ No Answer (Sources: {len(sources)})")

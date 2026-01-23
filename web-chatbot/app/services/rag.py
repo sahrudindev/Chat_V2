@@ -291,7 +291,10 @@ Perubahan Harga: {fmt_num(payload.get('price_change'))} ({fmt_pct(payload.get('p
 Volume: {fmt_num(payload.get('tradable_volume'))}
 Kapitalisasi Pasar: {fmt_num(payload.get('capitalization'), "Rp ")}
 P/E Ratio: {payload.get('price_earning_ratio') or 'N/A'}
-EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}{dividends_text}""")
+EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}{dividends_text}
+Deskripsi & Data Keuangan:
+{payload.get('text', '')}
+""")
             else:
                 # Rest: Just code
                 additional_codes.append(exchange)
@@ -390,9 +393,10 @@ EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}{dividends_te
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
         
-        # Add history if provided
+        # Add history if provided (use last 8 messages for context)
         if history:
-            for msg in history[-4:]:
+            logger.info(f"[RAG] Adding {len(history)} history messages to prompt")
+            for msg in history[-8:]:
                 messages.append({
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", "")
@@ -438,15 +442,83 @@ Note: No relevant context was found in the knowledge base."""
         """
         logger.info(f"Processing query: {query[:50]}...")
         
-        # Retrieve
-        sources, context = await self.retrieve(query)
+        # Enhance query with context from history (extract stock codes/company names)
+        enhanced_query = self._enhance_query_with_history(query, history)
+        if enhanced_query != query:
+            logger.info(f"Enhanced query: {enhanced_query[:80]}...")
+        
+        # Retrieve using enhanced query
+        sources, context = await self.retrieve(enhanced_query)
         logger.info(f"Retrieved {len(sources)} documents")
         
-        # Generate
+        # Generate response with original query but enhanced context
         response = await self.generate_response(query, context, history)
         logger.info("Generated response")
         
         return response, sources
+    
+    def _enhance_query_with_history(self, query: str, history: Optional[List[dict]]) -> str:
+        """
+        Enhance the current query with relevant context from history.
+        
+        Extracts stock codes and company names from recent history and adds
+        them to the query if the current query appears to be a follow-up question.
+        """
+        if not history:
+            return query
+        
+        import re
+        
+        # Check if this looks like a follow-up question (short, uses pronouns, etc.)
+        follow_up_patterns = [
+            r'^berapa\s+(harga|nilai|volume|market\s*cap|kapitalisasi)',
+            r'^(apa|siapa|kapan|dimana|bagaimana)\s+(itu|saja|dia)',
+            r'^(harga|nilai|volume|eps|per)nya',
+            r'^(ceritakan|jelaskan)\s+(lebih|lagi)',
+            r'^(dan|lalu|terus)\s+',
+            r'^(bandingkan|compare)',
+            r'(nya\??|itu\??|ini\??)$',  # Ends with -nya, itu, ini
+        ]
+        
+        query_lower = query.lower().strip()
+        is_follow_up = any(re.search(pattern, query_lower) for pattern in follow_up_patterns)
+        
+        if not is_follow_up:
+            return query
+        
+        # Extract stock codes (4 uppercase letters) and company names from history
+        stock_codes = set()
+        company_keywords = []
+        
+        # Common stock code pattern (4 capital letters)
+        stock_pattern = re.compile(r'\b([A-Z]{4})\b')
+        
+        for msg in history[-4:]:  # Last 4 messages
+            content = msg.get("content", "")
+            
+            # Find stock codes
+            codes = stock_pattern.findall(content)
+            for code in codes:
+                # Filter out common non-stock words
+                if code not in ['YANG', 'AKAN', 'DARI', 'ATAU', 'PADA', 'KAMI', 'JIKA', 'BISA', 'BERI', 'TAHU', 'DATA', 'INFO']:
+                    stock_codes.add(code)
+            
+            # Find company names mentioned after stock codes (in parentheses or after)
+            name_pattern = re.compile(r'([A-Z]{4})\s*(?:\(([^)]+)\)|adalah\s+([^,.]+))')
+            for match in name_pattern.finditer(content):
+                if match.group(2):
+                    company_keywords.append(match.group(2).strip()[:30])
+                if match.group(3):
+                    company_keywords.append(match.group(3).strip()[:30])
+        
+        # Build enhanced query
+        if stock_codes:
+            codes_str = " ".join(sorted(stock_codes))
+            enhanced = f"{query} {codes_str}"
+            logger.info(f"[RAG] Added context from history: {codes_str}")
+            return enhanced
+        
+        return query
 
 
 _rag_service = None
