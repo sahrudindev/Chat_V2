@@ -37,15 +37,6 @@ class RAGService:
     async def retrieve(self, query: str) -> Tuple[List[SourceDocument], str]:
         """
         Retrieve relevant documents for a query with hybrid search.
-        
-        Uses semantic search (embeddings) combined with Qdrant filtering
-        for numerical/date queries.
-        
-        Args:
-            query: User query text
-            
-        Returns:
-            Tuple of (source_documents, formatted_context)
         """
         # Parse query for filters
         parsed = query_parser.parse(query)
@@ -70,12 +61,15 @@ class RAGService:
             # This ensures ranking queries get ALL data for accurate sorting
             logger.info(f"Using scroll_with_filter: filter={qdrant_filter}")
             results = self.qdrant_service.scroll_with_filter(
-                query_filter=qdrant_filter,  # Will be None for pure ranking queries
+                query_filter=qdrant_filter,
                 limit=1000  # Get ALL data for accurate ranking (BEI has ~800 stocks)
             )
+            # If explicit filter was used but few results (maybe checking semantic relevance too),
+            # we might want to still do hybrid search? No, filter is authoritative.
+            
             logger.info(f"Scroll returned {len(results)} results")
             
-            # Sort results by sort field
+            # Sort results by sort field if specified
             if sort_field and results:
                 results = sorted(
                     results,
