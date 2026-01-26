@@ -271,23 +271,115 @@ class RAGService:
                     if len(sorted_years) > 3:
                         dividends_text += f"  ... dan riwayat tahun-tahun sebelumnya\n"
                 
+                # Format financial data for display
+                financial_text = ""
+                if payload.get('financial_period'):
+                    is_bank = payload.get('is_bank', False)
+                    period = payload.get('financial_period', 'N/A')
+                    
+                    # Common metrics
+                    financial_text = f"\n📊 Laporan Keuangan ({period}):\n"
+                    
+                    net_profit = payload.get('net_profit')
+                    if net_profit:
+                        yoy = payload.get('net_profit_yoy_growth')
+                        yoy_str = f" ({yoy:+.1f}% YoY)" if yoy else ""
+                        financial_text += f"  - Net Profit: {fmt_num(net_profit, 'Rp ')}{yoy_str}\n"
+                    
+                    roe = payload.get('roe')
+                    roa = payload.get('roa')
+                    if roe:
+                        financial_text += f"  - ROE: {roe:.2f}%\n"
+                    if roa:
+                        financial_text += f"  - ROA: {roa:.2f}%\n"
+                    
+                    # EPS from financial
+                    eps = payload.get('eps') or payload.get('earning_per_share')
+                    if eps:
+                        financial_text += f"  - EPS: {eps:,.2f}\n"
+                    
+                    if not is_bank:
+                        # Non-bank metrics
+                        revenue = payload.get('revenue')
+                        if revenue:
+                            rev_yoy = payload.get('revenue_yoy_growth')
+                            rev_yoy_str = f" ({rev_yoy:+.1f}% YoY)" if rev_yoy else ""
+                            financial_text += f"  - Revenue: {fmt_num(revenue, 'Rp ')}{rev_yoy_str}\n"
+                        
+                        cogs = payload.get('cogs')
+                        if cogs:
+                            financial_text += f"  - COGS: {fmt_num(cogs, 'Rp ')}\n"
+                        
+                        gross_profit = payload.get('gross_profit')
+                        if gross_profit:
+                            financial_text += f"  - Gross Profit: {fmt_num(gross_profit, 'Rp ')}\n"
+                        
+                        operating_profit = payload.get('operating_profit')
+                        if operating_profit:
+                            financial_text += f"  - Operating Profit: {fmt_num(operating_profit, 'Rp ')}\n"
+                        
+                        gross_margin = payload.get('gross_margin')
+                        operating_margin = payload.get('operating_margin')
+                        net_margin = payload.get('net_margin')
+                        if gross_margin:
+                            financial_text += f"  - Gross Margin: {gross_margin:.1f}%\n"
+                        if operating_margin:
+                            financial_text += f"  - Operating Margin: {operating_margin:.1f}%\n"
+                        if net_margin:
+                            financial_text += f"  - Net Margin: {net_margin:.1f}%\n"
+                    else:
+                        # Bank metrics
+                        nii = payload.get('net_interest_income')
+                        if nii:
+                            financial_text += f"  - Net Interest Income: {fmt_num(nii, 'Rp ')}\n"
+                    
+                    # Balance Sheet
+                    total_assets = payload.get('total_assets')
+                    total_liabilities = payload.get('total_liabilities')
+                    total_equity = payload.get('total_equity')
+                    if total_assets:
+                        financial_text += f"  - Total Assets: {fmt_num(total_assets, 'Rp ')}\n"
+                    if total_liabilities:
+                        financial_text += f"  - Total Liabilities: {fmt_num(total_liabilities, 'Rp ')}\n"
+                    if total_equity:
+                        financial_text += f"  - Total Equity: {fmt_num(total_equity, 'Rp ')}\n"
+                    
+                    # Common ratios
+                    pbv = payload.get('pbv_ratio')
+                    der = payload.get('der_ratio')
+                    if pbv:
+                        financial_text += f"  - P/BV Ratio: {pbv:.2f}x\n"
+                    if der:
+                        financial_text += f"  - DER Ratio: {der:.2f}x\n"
+                    
+                    # Financial History (for trend queries)
+                    history = payload.get('financial_history', [])
+                    if len(history) >= 2:
+                        financial_text += f"\n  📈 Trend {len(history)} Quarter:\n"
+                        for hist in history[:4]:
+                            hist_period = hist.get('period', '')
+                            hist_np = hist.get('net_profit')
+                            hist_roe = hist.get('roe')
+                            hist_line = f"    - {hist_period}: "
+                            parts_hist = []
+                            if hist_np:
+                                parts_hist.append(f"Net Profit {fmt_num(hist_np, 'Rp ')}")
+                            if hist_roe:
+                                parts_hist.append(f"ROE {hist_roe:.1f}%")
+                            financial_text += hist_line + ", ".join(parts_hist) + "\n"
+                
                 detailed_parts.append(f"""
 [Perusahaan {i+1}]
 Nama: {name} ({exchange})
 Sektor: {sector_display}
+Tipe: {"Bank" if payload.get('is_bank') else "Non-Bank"}
 Established: {payload.get('established') or 'N/A'}
 Listing Date: {payload.get('listing') or 'N/A'}
 Harga Penutupan: {fmt_num(payload.get('close_price'), "Rp ")}
-Harga Pembukaan: {fmt_num(payload.get('open_price'), "Rp ")}
-Harga Tertinggi: {fmt_num(payload.get('day_high'), "Rp ")}
-Harga Terendah: {fmt_num(payload.get('day_low'), "Rp ")}
 Perubahan Harga: {fmt_num(payload.get('price_change'))} ({fmt_pct(payload.get('percentage_price'))})
-Volume: {fmt_num(payload.get('tradable_volume'))}
 Kapitalisasi Pasar: {fmt_num(payload.get('capitalization'), "Rp ")}
 P/E Ratio: {payload.get('price_earning_ratio') or 'N/A'}
-EPS: {payload.get('earning_per_share') or 'N/A'}{shareholders_text}{dividends_text}
-Deskripsi & Data Keuangan:
-{payload.get('text', '')}
+EPS: {payload.get('earning_per_share') or 'N/A'}{financial_text}{shareholders_text}{dividends_text}
 """)
             else:
                 # Rest: Just code

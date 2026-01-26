@@ -6,6 +6,11 @@ Checks all connections and dependencies for the ETL pipeline.
 """
 
 import sys
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 def print_header(title):
     print(f"\n{'='*60}")
@@ -128,11 +133,18 @@ try:
     
     host = os.getenv('QDRANT_HOST', 'localhost')
     port = int(os.getenv('QDRANT_PORT', 6333))
+    url = os.getenv('QDRANT_URL')
+    api_key = os.getenv('QDRANT_API_KEY')
     
-    client = QdrantClient(host=host, port=port, timeout=5)
+    if url:
+        client = QdrantClient(url=url, api_key=api_key, timeout=5)
+        conn_str = f"Qdrant Cloud {url}"
+    else:
+        client = QdrantClient(host=host, port=port, timeout=5)
+        conn_str = f"Qdrant {host}:{port}"
     collections = client.get_collections().collections
     
-    check_result(f"Qdrant {host}:{port}", True, f"{len(collections)} collections")
+    check_result(conn_str, True, f"{len(collections)} collections")
     
     if collections:
         print(f"\n   📦 Existing Collections:")

@@ -157,6 +157,30 @@ class QueryParser:
                     "match": detected_sector
                 })
         
+        # Detect stock codes (4 uppercase letters) for single company queries
+        # Common non-stock words to exclude
+        non_stock_words = {
+            'YANG', 'AKAN', 'DARI', 'ATAU', 'PADA', 'KAMI', 'JIKA', 'BISA', 
+            'BERI', 'TAHU', 'DATA', 'INFO', 'BANK', 'TBKM', 'COGS', 'YANG'
+        }
+        stock_codes = re.findall(r'\b([A-Z]{4})\b', query)
+        detected_stock_codes = [code for code in stock_codes if code not in non_stock_words]
+        
+        # If 1-2 stock codes detected, add as filter for exact company lookup
+        if detected_stock_codes and len(detected_stock_codes) <= 2:
+            if len(detected_stock_codes) == 1:
+                # Single company query - exact match
+                filters.append({
+                    "key": "exchange",
+                    "match": detected_stock_codes[0]
+                })
+            else:
+                # Comparison query - match either
+                filters.append({
+                    "key": "exchange",
+                    "match_any": detected_stock_codes
+                })
+        
         # Extract requested count (e.g., "5 saham", "10 bank", "3 perusahaan")
         requested_count = 10  # default
         count_match = re.search(r'\b(\d+)\s*(?:saham|bank|perusahaan|emiten|stock)', query, re.IGNORECASE)
@@ -181,14 +205,56 @@ class QueryParser:
             # Highest dividend per share (ONLY for ranking queries)
             sort_field = 'latest_dividend_per_share'
             sort_descending = True
-        elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'untung', 'keuntungan', 'profit', 'cuan']):
-            # Market gainers - highest % price increase
+        elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'untung', 'keuntungan', 'cuan']) and \
+             'net profit' not in query_lower and 'laba' not in query_lower:
+            # Market gainers - highest % price increase (exclude profit queries)
             sort_field = 'percentage_price'
             sort_descending = True
         elif any(kw in query_lower for kw in ['loser', 'losers', 'turun', 'rugi', 'loss']):
             # Market losers - lowest % price (most negative first)
             sort_field = 'percentage_price'
             sort_descending = False
+        # === FINANCIAL METRICS SORTING ===
+        elif any(kw in query_lower for kw in ['roe', 'return on equity']):
+            sort_field = 'roe'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        elif any(kw in query_lower for kw in ['roa', 'return on asset']):
+            sort_field = 'roa'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        elif any(kw in query_lower for kw in ['operating margin', 'margin operasi']):
+            sort_field = 'operating_margin'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        elif any(kw in query_lower for kw in ['gross margin', 'margin kotor']):
+            sort_field = 'gross_margin'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        elif any(kw in query_lower for kw in ['net margin', 'margin bersih']):
+            sort_field = 'net_margin'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        elif 'cogs' in query_lower or 'cost of goods' in query_lower or 'hpp' in query_lower:
+            sort_field = 'cogs'
+            sort_descending = True
+        elif 'eps' in query_lower or 'earning per share' in query_lower:
+            sort_field = 'eps'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        elif any(kw in query_lower for kw in ['net profit', 'laba bersih', 'profit']):
+            sort_field = 'net_profit'
+            sort_descending = 'terkecil' not in query_lower and 'terendah' not in query_lower
+        elif any(kw in query_lower for kw in ['revenue', 'pendapatan']):
+            sort_field = 'revenue'
+            sort_descending = 'terkecil' not in query_lower and 'terendah' not in query_lower
+        elif any(kw in query_lower for kw in ['total aset', 'total assets', 'aset']):
+            sort_field = 'total_assets'
+            sort_descending = 'terkecil' not in query_lower and 'terendah' not in query_lower
+        elif any(kw in query_lower for kw in ['total equity', 'ekuitas']):
+            sort_field = 'total_equity'
+            sort_descending = 'terkecil' not in query_lower and 'terendah' not in query_lower
+        elif any(kw in query_lower for kw in ['pbv', 'p/bv', 'price to book']):
+            sort_field = 'pbv_ratio'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        elif any(kw in query_lower for kw in ['der', 'debt to equity', 'debt equity']):
+            sort_field = 'der_ratio'
+            sort_descending = 'terendah' not in query_lower and 'terkecil' not in query_lower
+        # === END FINANCIAL METRICS ===
         elif 'terbesar' in query_lower or 'tertinggi' in query_lower:
             sort_field = 'capitalization'
             sort_descending = True
@@ -298,12 +364,24 @@ class QueryParser:
                     "key": key,
                     "range": f["range"]
                 })
-            # Handle match filter (for sector)
+            # Handle match filter (for sector or single stock code)
             elif "match" in f:
                 conditions.append({
                     "key": key,
-                    "match": f["match"]
+                    "match": {"value": f["match"]}
                 })
+            # Handle match_any filter (for comparison with multiple stock codes)
+            elif "match_any" in f:
+                # Use "should" with multiple match conditions
+                any_conditions = []
+                for val in f["match_any"]:
+                    any_conditions.append({
+                        "key": key,
+                        "match": {"value": val}
+                    })
+                # Return early with should for match_any
+                if any_conditions:
+                    conditions.append({"should": any_conditions})
         
         if not conditions:
             return None

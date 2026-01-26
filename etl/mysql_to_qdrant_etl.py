@@ -20,6 +20,10 @@ Data Source: idnfinancials.com
 import os
 import sys
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 from dataclasses import dataclass
 from typing import Generator, Dict, Any, List, Tuple, Optional
 from datetime import datetime
@@ -73,6 +77,8 @@ class QdrantConfig:
     host: str = os.getenv('QDRANT_HOST', 'localhost')
     port: int = int(os.getenv('QDRANT_PORT', 6333))
     collection_name: str = os.getenv('QDRANT_COLLECTION', 'financial_data')
+    url: Optional[str] = os.getenv('QDRANT_URL')
+    api_key: Optional[str] = os.getenv('QDRANT_API_KEY')
     
     # BGE-M3 produces 1024-dimensional dense vectors
     dense_vector_size: int = 1024
@@ -846,11 +852,7 @@ def _process_financial_records(records: List[Dict], is_bank: bool) -> Dict[str, 
             'roa': _parse_numeric(rec.get('roa')),
         }
         
-        if is_bank:
-            hist_item['car'] = _parse_numeric(rec.get('car'))
-            hist_item['npl'] = _parse_numeric(rec.get('npl'))
-            hist_item['ldr'] = _parse_numeric(rec.get('ldr'))
-        else:
+        if not is_bank:
             hist_item['revenue'] = _parse_numeric(rec.get('revenue'))
             hist_item['gross_margin'] = _parse_numeric(rec.get('gross_margin'))
             hist_item['operating_margin'] = _parse_numeric(rec.get('operating_margin'))
@@ -928,6 +930,17 @@ def _process_financial_records(records: List[Dict], is_bank: bool) -> Dict[str, 
         })
     else:
         # Non-bank metrics
+        # Calculate ROE/ROA if not present
+        net_profit = _parse_numeric(latest.get('net_profit'))
+        total_assets = _parse_numeric(latest.get('total_assets'))
+        total_equity = _parse_numeric(latest.get('total_equity'))
+        
+        if not result['roe'] and net_profit and total_equity and total_equity != 0:
+            result['roe'] = round((net_profit / total_equity) * 100, 2)
+        
+        if not result['roa'] and net_profit and total_assets and total_assets != 0:
+            result['roa'] = round((net_profit / total_assets) * 100, 2)
+        
         result.update({
             'revenue': _parse_numeric(latest.get('revenue')),
             'cogs': _parse_numeric(latest.get('cogs')),
@@ -1243,6 +1256,33 @@ def setup_qdrant_collection(client: QdrantClient, config: QdrantConfig) -> None:
     )
     
     logger.info(f"Collection '{collection_name}' created successfully")
+    
+    # Create payload indices for filterable fields
+    logger.info("Creating payload indices for filtering...")
+    
+    filterable_fields = [
+        ("exchange", "keyword"),      # Stock code like BBCA, BBRI
+        ("si_code", "keyword"),       # Sector code like D, G
+        ("is_bank", "bool"),          # Bank vs non-bank flag
+    ]
+    
+    for field_name, field_type in filterable_fields:
+        try:
+            if field_type == "keyword":
+                client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema="keyword"
+                )
+            elif field_type == "bool":
+                client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema="bool"
+                )
+            logger.info(f"  ✓ Index created: {field_name} ({field_type})")
+        except Exception as e:
+            logger.warning(f"  ⚠ Could not create index for {field_name}: {e}")
 
 
 # =============================================================================
@@ -1417,10 +1457,7 @@ def process_and_upsert_batch(
                 "net_cash": company_financials.get('net_cash'),
                 "cash_on_hand": company_financials.get('cash_on_hand'),
                 
-                # Banking-specific metrics
-                "car": company_financials.get('car'),
-                "ldr": company_financials.get('ldr'),
-                "npl": company_financials.get('npl'),
+                # Banking-specific metrics (net_interest_income only)
                 "net_interest_income": company_financials.get('net_interest_income'),
                 
                 # YoY Growth metrics
@@ -1500,14 +1537,44 @@ def run_etl(
     logger.info("Initializing BGE-M3 embedding model...")
     embedder = BGEM3Embedder(device='auto')
     
-    logger.info(f"Connecting to Qdrant: {qdrant_config.host}:{qdrant_config.port}")
-    client = QdrantClient(
-        host=qdrant_config.host,
-        port=qdrant_config.port,
-    )
+    # Initialize Qdrant clients (support dual-target: Cloud + Local)
+    clients = []
     
-    # Setup collection
-    setup_qdrant_collection(client, qdrant_config)
+    # Primary: Cloud (if configured)
+    if qdrant_config.url:
+        logger.info(f"Connecting to Qdrant Cloud: {qdrant_config.url}")
+        cloud_client = QdrantClient(
+            url=qdrant_config.url,
+            api_key=qdrant_config.api_key,
+            timeout=60
+        )
+        clients.append(("Cloud", cloud_client))
+    
+    # Secondary: Local (always try if host is configured)
+    if qdrant_config.host:
+        try:
+            logger.info(f"Connecting to Qdrant Local: {qdrant_config.host}:{qdrant_config.port}")
+            local_client = QdrantClient(
+                host=qdrant_config.host,
+                port=qdrant_config.port,
+                timeout=10
+            )
+            # Test connection
+            local_client.get_collections()
+            clients.append(("Local", local_client))
+            logger.info("✓ Qdrant Local connected (backup target)")
+        except Exception as e:
+            logger.warning(f"Qdrant Local not available: {e}")
+    
+    if not clients:
+        raise RuntimeError("No Qdrant targets available. Configure QDRANT_URL or QDRANT_HOST.")
+    
+    logger.info(f"ETL will write to {len(clients)} target(s): {[name for name, _ in clients]}")
+    
+    # Setup collection on all targets
+    for name, client in clients:
+        logger.info(f"Setting up collection on {name}...")
+        setup_qdrant_collection(client, qdrant_config)
     
     # Fetch shareholder data if enabled
     shareholders_map: Dict[str, List[Dict[str, Any]]] = {}
@@ -1548,6 +1615,34 @@ def run_etl(
             # Process batch when full
             if len(batch) >= etl_config.batch_size:
                 try:
+                    # Upsert to ALL targets
+                    for target_name, client in clients:
+                        count = process_and_upsert_batch(
+                            batch=batch,
+                            embedder=embedder,
+                            client=client,
+                            config=qdrant_config,
+                            start_id=total_processed + 1,
+                            shareholders_map=shareholders_map,
+                            dividends_map=dividends_map,
+                            financials_map=financials_map,
+                            dry_run=etl_config.dry_run,
+                        )
+                    total_processed += len(batch)
+                    batch_count += 1
+                    pbar.update(len(batch))
+                    
+                except Exception as e:
+                    logger.error(f"Error processing batch {batch_count}: {e}")
+                    # Continue with next batch instead of failing completely
+                    
+                batch = []
+        
+        # Process remaining rows
+        if batch:
+            try:
+                # Upsert to ALL targets
+                for target_name, client in clients:
                     count = process_and_upsert_batch(
                         batch=batch,
                         embedder=embedder,
@@ -1559,33 +1654,9 @@ def run_etl(
                         financials_map=financials_map,
                         dry_run=etl_config.dry_run,
                     )
-                    total_processed += count
-                    batch_count += 1
-                    pbar.update(count)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing batch {batch_count}: {e}")
-                    # Continue with next batch instead of failing completely
-                    
-                batch = []
-        
-        # Process remaining rows
-        if batch:
-            try:
-                count = process_and_upsert_batch(
-                    batch=batch,
-                    embedder=embedder,
-                    client=client,
-                    config=qdrant_config,
-                    start_id=total_processed + 1,
-                    shareholders_map=shareholders_map,
-                    dividends_map=dividends_map,
-                    financials_map=financials_map,
-                    dry_run=etl_config.dry_run,
-                )
-                total_processed += count
+                total_processed += len(batch)
                 batch_count += 1
-                pbar.update(count)
+                pbar.update(len(batch))
                 
             except Exception as e:
                 logger.error(f"Error processing final batch: {e}")

@@ -12,18 +12,24 @@ logger = logging.getLogger(__name__)
 class QdrantService:
     """Qdrant vector database service for semantic search."""
     
-    def __init__(self, host: str, port: int, collection_name: str):
+    def __init__(self, host: str, port: int, collection_name: str, url: Optional[str] = None, api_key: Optional[str] = None):
         self.host = host
         self.port = port
         self.collection_name = collection_name
+        self.url = url
+        self.api_key = api_key
         self._client = None
     
     @property
     def client(self) -> QdrantClient:
         """Lazy load Qdrant client."""
         if self._client is None:
-            logger.info(f"Connecting to Qdrant: {self.host}:{self.port}")
-            self._client = QdrantClient(host=self.host, port=self.port)
+            if self.url:
+                logger.info(f"Connecting to Qdrant Cloud: {self.url}")
+                self._client = QdrantClient(url=self.url, api_key=self.api_key)
+            else:
+                logger.info(f"Connecting to Qdrant: {self.host}:{self.port}")
+                self._client = QdrantClient(host=self.host, port=self.port)
             logger.info(f"Connected to Qdrant, collection: {self.collection_name}")
         return self._client
     
@@ -165,14 +171,18 @@ class QdrantService:
                             )
                         )
                     
-                    # Handle match filter (for sector codes like G111)
+                    # Handle match filter (for sector codes, stock codes)
                     elif "match" in condition:
                         match_value = condition.get("match")
-                        # Use MatchText for prefix matching (e.g., "G" matches "G111", "G121")
+                        # Handle both dict format {"value": "ICBP"} and string format "ICBP"
+                        if isinstance(match_value, dict):
+                            match_value = match_value.get("value", match_value)
+                        
+                        # Use MatchValue for exact matching (e.g., "ICBP" matches exactly "ICBP")
                         filter_conditions.append(
                             models.FieldCondition(
                                 key=key,
-                                match=models.MatchText(text=match_value)
+                                match=models.MatchValue(value=match_value)
                             )
                         )
                 
@@ -212,6 +222,9 @@ _qdrant_service = None
 def get_qdrant_service(host: str, port: int, collection_name: str) -> QdrantService:
     """Get singleton Qdrant service."""
     global _qdrant_service
+    import os
     if _qdrant_service is None:
-        _qdrant_service = QdrantService(host, port, collection_name)
+        url = os.getenv("QDRANT_URL")
+        api_key = os.getenv("QDRANT_API_KEY")
+        _qdrant_service = QdrantService(host, port, collection_name, url=url, api_key=api_key)
     return _qdrant_service
