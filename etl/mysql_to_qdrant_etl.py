@@ -842,18 +842,37 @@ def _process_financial_records(records: List[Dict], is_bank: bool) -> Dict[str, 
             prev_year_record = rec
             break
     
-    # Build 4-quarter history
+    # Build 4-quarter history with COMPLETE financial data
     history = []
     for rec in records[:4]:
         hist_item = {
             'period': rec.get('asof_date', ''),
+            # Core metrics (all companies)
             'net_profit': _parse_numeric(rec.get('net_profit')),
             'roe': _parse_numeric(rec.get('roe')),
             'roa': _parse_numeric(rec.get('roa')),
+            'eps': _parse_numeric(rec.get('eps')),
+            # Balance sheet (all companies)
+            'total_assets': _parse_numeric(rec.get('total_assets')),
+            'total_liabilities': _parse_numeric(rec.get('total_liabilities')),
+            'total_equity': _parse_numeric(rec.get('total_equity')),
+            # Operating metrics
+            'operating_expense': _parse_numeric(rec.get('operating_expense')),
+            'operating_profit': _parse_numeric(rec.get('operating_profit')),
         }
         
-        if not is_bank:
+        if is_bank:
+            # Bank-specific metrics (complete list from ks_financial_bank)
+            hist_item['net_interest_income'] = _parse_numeric(rec.get('net_interest_income'))
+            hist_item['total_shares'] = _parse_numeric(rec.get('total_shares'))
+            hist_item['minority_interest'] = _parse_numeric(rec.get('minority_interest'))
+            hist_item['net_cash'] = _parse_numeric(rec.get('net_cash'))  # Kas Bersih dari Aktivitas Operasional
+            hist_item['cash_on_hand'] = _parse_numeric(rec.get('cash_on_hand'))  # Dana Tunai di Akhir Periode
+        else:
+            # Non-bank metrics
             hist_item['revenue'] = _parse_numeric(rec.get('revenue'))
+            hist_item['cogs'] = _parse_numeric(rec.get('cogs'))
+            hist_item['gross_profit'] = _parse_numeric(rec.get('gross_profit'))
             hist_item['gross_margin'] = _parse_numeric(rec.get('gross_margin'))
             hist_item['operating_margin'] = _parse_numeric(rec.get('operating_margin'))
             hist_item['net_margin'] = _parse_numeric(rec.get('net_margin'))

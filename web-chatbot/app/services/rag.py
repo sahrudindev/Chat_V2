@@ -352,21 +352,81 @@ class RAGService:
                     if der:
                         financial_text += f"  - DER Ratio: {der:.2f}x\n"
                     
-                    # Financial History (for trend queries)
+                    # Financial History (for trend queries) - Complete quarterly data
                     history = payload.get('financial_history', [])
                     if len(history) >= 2:
-                        financial_text += f"\n  📈 Trend {len(history)} Quarter:\n"
+                        is_bank_company = payload.get('is_bank', False)
+                        financial_text += f"\n  📈 Trend {len(history)} Kuartal:\n"
+                        
                         for hist in history[:4]:
                             hist_period = hist.get('period', '')
-                            hist_np = hist.get('net_profit')
-                            hist_roe = hist.get('roe')
-                            hist_line = f"    - {hist_period}: "
-                            parts_hist = []
-                            if hist_np:
-                                parts_hist.append(f"Net Profit {fmt_num(hist_np, 'Rp ')}")
-                            if hist_roe:
-                                parts_hist.append(f"ROE {hist_roe:.1f}%")
-                            financial_text += hist_line + ", ".join(parts_hist) + "\n"
+                            financial_text += f"    [{hist_period}]\n"
+                            
+                            # Bank-specific - Income Statement
+                            if is_bank_company:
+                                if hist.get('net_interest_income'):
+                                    financial_text += f"      Pendapatan Bunga Bersih: {fmt_num(hist.get('net_interest_income'), 'Rp ')}\n"
+                                if hist.get('operating_expense'):
+                                    financial_text += f"      Biaya Operasional: {fmt_num(hist.get('operating_expense'), 'Rp ')}\n"
+                                if hist.get('operating_profit'):
+                                    financial_text += f"      Laba Operasional: {fmt_num(hist.get('operating_profit'), 'Rp ')}\n"
+                                if hist.get('net_profit'):
+                                    financial_text += f"      Keuntungan Bersih: {fmt_num(hist.get('net_profit'), 'Rp ')}\n"
+                                if hist.get('total_shares'):
+                                    financial_text += f"      Total Saham: {hist.get('total_shares'):,.0f}\n"
+                                if hist.get('eps'):
+                                    financial_text += f"      EPS: {hist.get('eps'):,.0f}\n"
+                                # Balance Sheet
+                                if hist.get('total_assets'):
+                                    financial_text += f"      Total Aset: {fmt_num(hist.get('total_assets'), 'Rp ')}\n"
+                                if hist.get('total_liabilities'):
+                                    financial_text += f"      Total Liabilitas: {fmt_num(hist.get('total_liabilities'), 'Rp ')}\n"
+                                if hist.get('minority_interest'):
+                                    financial_text += f"      Kepentingan Non-pengendali: {fmt_num(hist.get('minority_interest'), 'Rp ')}\n"
+                                if hist.get('total_equity'):
+                                    financial_text += f"      Total Ekuitas: {fmt_num(hist.get('total_equity'), 'Rp ')}\n"
+                                # Ratios
+                                if hist.get('roe'):
+                                    financial_text += f"      ROE: {hist.get('roe'):.2f}%\n"
+                                if hist.get('roa'):
+                                    financial_text += f"      ROA: {hist.get('roa'):.2f}%\n"
+                                # Cash Flow
+                                if hist.get('net_cash'):
+                                    financial_text += f"      Kas Bersih Operasional: {fmt_num(hist.get('net_cash'), 'Rp ')}\n"
+                                if hist.get('cash_on_hand'):
+                                    financial_text += f"      Dana Tunai Akhir Periode: {fmt_num(hist.get('cash_on_hand'), 'Rp ')}\n"
+                            else:
+                                # Non-bank specific
+                                if hist.get('revenue'):
+                                    financial_text += f"      Revenue: {fmt_num(hist.get('revenue'), 'Rp ')}\n"
+                                if hist.get('cogs'):
+                                    financial_text += f"      COGS: {fmt_num(hist.get('cogs'), 'Rp ')}\n"
+                                if hist.get('gross_profit'):
+                                    financial_text += f"      Gross Profit: {fmt_num(hist.get('gross_profit'), 'Rp ')}\n"
+                                if hist.get('operating_profit'):
+                                    financial_text += f"      Operating Profit: {fmt_num(hist.get('operating_profit'), 'Rp ')}\n"
+                                if hist.get('net_profit'):
+                                    financial_text += f"      Net Profit: {fmt_num(hist.get('net_profit'), 'Rp ')}\n"
+                                if hist.get('eps'):
+                                    financial_text += f"      EPS: {hist.get('eps'):,.0f}\n"
+                                if hist.get('gross_margin'):
+                                    financial_text += f"      Gross Margin: {hist.get('gross_margin'):.1f}%\n"
+                                if hist.get('operating_margin'):
+                                    financial_text += f"      Operating Margin: {hist.get('operating_margin'):.1f}%\n"
+                                if hist.get('net_margin'):
+                                    financial_text += f"      Net Margin: {hist.get('net_margin'):.1f}%\n"
+                                # Balance sheet
+                                if hist.get('total_assets'):
+                                    financial_text += f"      Total Assets: {fmt_num(hist.get('total_assets'), 'Rp ')}\n"
+                                if hist.get('total_liabilities'):
+                                    financial_text += f"      Total Liabilities: {fmt_num(hist.get('total_liabilities'), 'Rp ')}\n"
+                                if hist.get('total_equity'):
+                                    financial_text += f"      Total Equity: {fmt_num(hist.get('total_equity'), 'Rp ')}\n"
+                                # Ratios
+                                if hist.get('roe'):
+                                    financial_text += f"      ROE: {hist.get('roe'):.2f}%\n"
+                                if hist.get('roa'):
+                                    financial_text += f"      ROA: {hist.get('roa'):.2f}%\n"
                 
                 detailed_parts.append(f"""
 [Perusahaan {i+1}]
