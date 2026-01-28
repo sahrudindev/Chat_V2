@@ -13,7 +13,7 @@ class AIServiceClient:
     """Client for remote AI service."""
     
     def __init__(self, base_url: str = "http://localhost:8001"):
-        self.base_url = base_url
+        self.base_url = base_url.rstrip('/')
         self.timeout = 120.0
     
     async def embed(self, text: str) -> Tuple[List[float], Dict[int, float]]:

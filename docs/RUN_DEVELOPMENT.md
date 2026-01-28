@@ -1,5 +1,23 @@
 # 🚀 Tutorial Menjalankan RAG Chatbot
 
+
+## ⚡️ Quick Start (Metode Paling Mudah)
+
+Anda bisa menjalankan seluruh sistem secara manual (tanpa rebuild Docker) dengan satu script:
+
+```bash
+cd /home/fiqri/Desktop/IDN/AI_v2
+./run_local.sh
+```
+
+Script ini akan:
+1. Menjalankan Qdrant (Docker) jika belum jalan.
+2. Menjalankan AI Service (Python :8001).
+3. Menjalankan Web Chatbot (Python :8080).
+4. Tekan `Ctrl+C` untuk menghentikan semua service.
+
+---
+
 ## Arsitektur Sistem
 
 ```
@@ -170,4 +188,29 @@ Chatbot mendukung **hybrid search**:
 |------------|--------|------------|
 | Semantic | "Bank terbesar" | Embedding similarity |
 | Filter Numerik | "Harga dibawah 1000" | Qdrant filter |
-| Filter Tanggal | "Listing sebelum 2000" | Semantic + context |
+---
+
+## Langkah Alternatif: Manual Run (Tanpa Helper Script)
+
+Jika Anda ingin menjalankan satu per satu untuk debugging:
+
+### 1. Jalankan Qdrant
+```bash
+docker compose up -d qdrant
+```
+
+### 2. Jalankan AI Service
+Terminal 1:
+```bash
+cd ai-service
+python main.py
+# Runs on :8001
+```
+
+### 3. Jalankan Web Chatbot
+Terminal 2:
+```bash
+cd web-chatbot
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+# Runs on :8080
+```
