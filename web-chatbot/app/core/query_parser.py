@@ -234,10 +234,17 @@ class QueryParser:
         sort_field = None
         sort_descending = True
         
-        if any(kw in query_lower for kw in ['earning', 'eps', 'laba', 'laba bersih']):
-            # EPS fundamental - highest earnings per share
+        # === NET PROFIT / LABA BERSIH / KEUNTUNGAN (Financial) ===
+        if any(kw in query_lower for kw in ['laba bersih', 'net profit', 'keuntungan']) and \
+           not any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'harga naik', 'cuan']):
+            # Net profit from financial statements
+            sort_field = 'net_profit'
+            sort_descending = True
+        # === EPS (Earnings Per Share) ===
+        elif any(kw in query_lower for kw in ['eps', 'earning per share', 'laba per saham']):
             sort_field = 'earning_per_share'
             sort_descending = True
+        # === DIVIDEND YIELD ===
         elif any(kw in query_lower for kw in ['dividend yield', 'yield dividen']) and \
              any(kw in query_lower for kw in ['tertinggi', 'terbesar', 'top', 'highest', 'best', 'paling tinggi']):
             # Dividend yield - highest yield first (ONLY for ranking queries)
@@ -248,12 +255,12 @@ class QueryParser:
             # Highest dividend per share (ONLY for ranking queries)
             sort_field = 'latest_dividend_per_share'
             sort_descending = True
-        elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'untung', 'keuntungan', 'cuan']) and \
-             'net profit' not in query_lower and 'laba' not in query_lower:
-            # Market gainers - highest % price increase (exclude profit queries)
+        # === MARKET GAINERS (% Price Change) ===
+        elif any(kw in query_lower for kw in ['gainer', 'gainers', 'naik', 'untung', 'cuan', 'terbang']):
+            # Market gainers - highest % price increase
             sort_field = 'percentage_price'
             sort_descending = True
-        elif any(kw in query_lower for kw in ['loser', 'losers', 'turun', 'rugi', 'loss']):
+        elif any(kw in query_lower for kw in ['loser', 'losers', 'turun', 'rugi', 'loss', 'anjlok']):
             # Market losers - lowest % price (most negative first)
             sort_field = 'percentage_price'
             sort_descending = False
