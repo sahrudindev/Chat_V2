@@ -515,6 +515,56 @@ EPS: {payload.get('earning_per_share') or 'N/A'}{financial_text}{shareholders_te
             else:
                 context += "\n\n[TOP LOSERS - Kerugian Terbesar]\nTidak ada saham dengan perubahan negatif dalam data saat ini."
         
+        # === BANK VS NON-BANK COMPARISON VALIDATION ===
+        # Detect financial comparison queries and validate same-type comparison
+        comparison_keywords = ['bandingkan', 'perbandingan', 'perbedaan', 'vs', 'versus', 'dibanding']
+        financial_keywords = ['keuangan', 'laporan', 'finansial', 'roe', 'roa', 'profit', 'revenue', 'laba']
+        
+        is_comparison = any(kw in query_lower for kw in comparison_keywords)
+        is_financial_comparison = is_comparison and any(kw in query_lower for kw in financial_keywords)
+        
+        if is_financial_comparison and len(results) >= 2:
+            # Check company types from first 2 results
+            companies_info = []
+            for r in results[:2]:
+                p = r.get("payload", {})
+                is_bank = p.get("is_bank", False)
+                si_code = p.get("si_code", "")
+                # Also detect bank from sector code (G111 = Bank)
+                is_bank_from_sector = si_code.startswith("G111") if si_code else False
+                companies_info.append({
+                    "name": p.get("name", "Unknown"),
+                    "exchange": p.get("exchange", "N/A"),
+                    "is_bank": is_bank or is_bank_from_sector
+                })
+            
+            # Check if types are different (one bank, one non-bank)
+            if len(companies_info) >= 2:
+                c1, c2 = companies_info[0], companies_info[1]
+                if c1["is_bank"] != c2["is_bank"]:
+                    # Mixed types - inject warning into context
+                    bank_name = c1["exchange"] if c1["is_bank"] else c2["exchange"]
+                    non_bank_name = c2["exchange"] if c1["is_bank"] else c1["exchange"]
+                    
+                    warning = f"""
+[⚠️ PERINGATAN: PERBANDINGAN TIDAK VALID]
+User meminta perbandingan finansial antara:
+- {bank_name} (BANK)
+- {non_bank_name} (NON-BANK)
+
+ATURAN: Perbandingan laporan keuangan hanya valid untuk sesama jenis:
+- Bank vs Bank ✅
+- Non-Bank vs Non-Bank ✅
+- Bank vs Non-Bank ❌ (tidak valid karena struktur laporan berbeda)
+
+RESPON YANG HARUS DIBERIKAN:
+"Maaf, perbandingan laporan keuangan antara bank ({bank_name}) dan non-bank ({non_bank_name}) 
+tidak dapat dilakukan karena struktur laporan keuangan yang berbeda. 
+Silakan bandingkan sesama bank atau sesama non-bank."
+"""
+                    context = warning + "\n" + context
+                    logger.info(f"Bank vs Non-Bank comparison detected: {bank_name} vs {non_bank_name}")
+        
         return sources, context
     
     async def generate_response(
