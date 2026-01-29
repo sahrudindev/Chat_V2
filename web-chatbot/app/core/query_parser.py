@@ -72,21 +72,48 @@ class QueryParser:
     
     # Sector keywords mapping to si_code (IDX-IC codes)
     SECTOR_KEYWORDS = {
+        # Finance - G
         'bank': 'G111',
         'perbankan': 'G111',
         'banking': 'G111',
         'asuransi': 'G121',
         'insurance': 'G121',
+        'pembiayaan': 'G131',
+        'financing': 'G131',
+        'sekuritas': 'G141',
+        'securities': 'G141',
+        
+        # Property - H
         'properti': 'H111',
         'property': 'H111',
         'real estat': 'H111',
+        'real estate': 'H111',
+        
+        # Technology - I
         'teknologi': 'I',
         'technology': 'I',
+        'tech': 'I',
+        'software': 'I111',
+        
+        # Telecom & Transport - J
         'telekomunikasi': 'J121',
         'telco': 'J121',
         'telecom': 'J121',
+        'transportasi': 'J111',
+        'transport': 'J111',
+        'logistics': 'J111',
+        'logistik': 'J111',
+        'media': 'J131',
+        
+        # Healthcare - F
         'farmasi': 'F121',
         'pharma': 'F121',
+        'kesehatan': 'F',
+        'healthcare': 'F',
+        'rumah sakit': 'F111',
+        'hospital': 'F111',
+        
+        # Energy & Mining - A, B
         'tambang': 'B111',
         'mining': 'B111',
         'batubara': 'A112',
@@ -94,10 +121,26 @@ class QueryParser:
         'minyak': 'A111',
         'oil': 'A111',
         'gas': 'A111',
+        'energi': 'A',
+        'energy': 'A',
+        
+        # Infrastructure & Construction - C
         'konstruksi': 'C121',
         'construction': 'C121',
+        'infrastruktur': 'C',
+        'infrastructure': 'C',
+        
+        # Consumer - D, E
         'consumer': 'D',
         'konsumen': 'D',
+        'makanan': 'D111',
+        'food': 'D111',
+        'minuman': 'D111',
+        'beverage': 'D111',
+        'ritel': 'E111',
+        'retail': 'E111',
+        'otomotif': 'D121',
+        'automotive': 'D121',
     }
     
     def parse(self, query: str) -> ParsedQuery:

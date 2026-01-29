@@ -72,14 +72,24 @@ SUB_INDUSTRIES = {
     "I111": "Perangkat Keras Teknologi",
     "I112": "Perangkat Lunak & Layanan TI",
     
-    # Infrastruktur
+    # Infrastruktur - EXPANDED with 3-digit codes
     "J111": "Utilitas",
     "J121": "Telekomunikasi",
     "J131": "Jalan Tol, Pelabuhan, Bandara & Sejenisnya",
+    # 3-digit variations (some companies use these)
+    "J11": "Utilitas",
+    "J12": "Telekomunikasi",
+    "J13": "Infrastruktur Transportasi",
+    "J31": "Telekomunikasi",  # Alternative code for telecom
+    "J312": "Telekomunikasi",  # TLKM uses this code
+    "J211": "Telekomunikasi",
+    "J21": "Telekomunikasi",
     
     # Transportasi & Logistik
     "K111": "Transportasi",
     "K121": "Logistik & Pengiriman",
+    "K11": "Transportasi",
+    "K12": "Logistik",
     
     # Pengembangan
     "Z": "Papan Pengembangan",

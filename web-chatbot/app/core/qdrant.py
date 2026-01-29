@@ -150,9 +150,26 @@ class QdrantService:
             
             # Build Qdrant filter if provided
             qdrant_filter = None
+            should_conditions = []  # For OR logic (match_any)
+            
             if query_filter and "must" in query_filter:
                 filter_conditions = []
                 for condition in query_filter["must"]:
+                    # Handle nested "should" structure (for match_any - comparison queries)
+                    if "should" in condition:
+                        for should_cond in condition["should"]:
+                            s_key = should_cond.get("key")
+                            s_match = should_cond.get("match", {})
+                            s_value = s_match.get("value") if isinstance(s_match, dict) else s_match
+                            if s_key and s_value:
+                                should_conditions.append(
+                                    models.FieldCondition(
+                                        key=s_key,
+                                        match=models.MatchValue(value=s_value)
+                                    )
+                                )
+                        continue  # Don't process as regular condition
+                    
                     key = condition.get("key")
                     
                     # Handle range filter (for price, volume, etc.)
@@ -186,8 +203,19 @@ class QdrantService:
                             )
                         )
                 
-                if filter_conditions:
+                # Build final filter with proper logic
+                if filter_conditions and should_conditions:
+                    # Both must AND should conditions - combine them
+                    qdrant_filter = models.Filter(
+                        must=filter_conditions,
+                        should=should_conditions
+                    )
+                elif filter_conditions:
+                    # Only must conditions (AND logic)
                     qdrant_filter = models.Filter(must=filter_conditions)
+                elif should_conditions:
+                    # Only should conditions (OR logic - for comparison queries)
+                    qdrant_filter = models.Filter(should=should_conditions)
             
             # Use scroll to get results (with or without filter)
             results, _ = self.client.scroll(
